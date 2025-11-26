@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DNS Tester</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-100 min-h-screen p-8">
+    <div id="app" class="max-w-6xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden">
+        <div class="bg-blue-600 p-6">
+            <h1 class="text-2xl font-bold text-white">DNS Resolution Tester</h1>
+            <p class="text-blue-100 mt-2">Test DNS servers via UDP, DoT, and DoH</p>
+        </div>
+
+        <div class="p-6 space-y-6">
+            <!-- Configuration -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Target Domain</label>
+                    <input v-model="domain" type="text"
+                        class="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none"
+                        placeholder="e.g. google.com">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Proxy (Optional)</label>
+                    <input v-model="proxy" type="text"
+                        class="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none"
+                        placeholder="http://127.0.0.1:7890">
+                </div>
+            </div>
+
+            <!-- Server Selection -->
+            <div>
+                <div class="flex justify-between items-center mb-2">
+                    <label class="block text-sm font-medium text-gray-700">DNS Servers</label>
+                    <div class="space-x-2 text-sm">
+                        <button @click="selectAll" class="text-blue-600 hover:underline">Select All</button>
+                        <button @click="deselectAll" class="text-blue-600 hover:underline">Deselect All</button>
+                    </div>
+                </div>
+
+                <div
+                    class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 max-h-60 overflow-y-auto border p-4 rounded bg-gray-50">
+                    <div v-for="(s, index) in defaultServers" :key="index" class="flex items-center space-x-2">
+                        <input type="checkbox" :id="'server-'+index" :value="index" v-model="selectedServerIndices"
+                            class="rounded text-blue-600 focus:ring-blue-500">
+                        <label :for="'server-'+index" class="text-sm text-gray-700 cursor-pointer select-none truncate"
+                            :title="s.server">
+                            <span class="font-medium">{{ s.name }}</span>
+                            <span class="text-xs text-gray-500 ml-1">({{ s.type }})</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Custom Server Input -->
+                <div class="mt-4 p-4 bg-gray-50 rounded border">
+                    <div class="flex items-center mb-2">
+                        <input type="checkbox" id="use-custom" v-model="useCustomServer"
+                            class="rounded text-blue-600 focus:ring-blue-500 mr-2">
+                        <label for="use-custom" class="text-sm font-medium text-gray-700 select-none">Test Custom
+                            Server</label>
+                    </div>
+                    <div v-if="useCustomServer" class="grid grid-cols-1 md:grid-cols-3 gap-4 pl-6">
+                        <div class="md:col-span-2">
+                            <input v-model="customServer.server" type="text" class="w-full p-2 border rounded text-sm"
+                                placeholder="8.8.8.8 or https://...">
+                        </div>
+                        <div>
+                            <select v-model="customServer.type" class="w-full p-2 border rounded text-sm">
+                                <option value="udp">UDP 53</option>
+                                <option value="doh">DoH (HTTPS)</option>
+                                <option value="dot">DoT (TLS)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Action -->
+            <div class="flex justify-end">
+                <button @click="runTest" :disabled="loading"
+                    class="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center">
+                    <span v-if="loading" class="animate-spin mr-2">⟳</span>
+                    {{ loading ? 'Testing...' : 'Run Test' }}
+                </button>
+            </div>
+
+            <!-- Results -->
+            <div v-if="results.length > 0" class="mt-8 border-t pt-6">
+                <h3 class="text-lg font-semibold mb-4">Test Results</h3>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full bg-white border border-gray-200">
+                        <thead>
+                            <tr
+                                class="bg-gray-50 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                <th class="px-4 py-3 border-b">Server</th>
+                                <th class="px-4 py-3 border-b">Type</th>
+                                <th class="px-4 py-3 border-b">Status</th>
+                                <th class="px-4 py-3 border-b">Latency</th>
+                                <th class="px-4 py-3 border-b">Result / Error</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-200">
+                            <tr v-for="(res, idx) in results" :key="idx" class="hover:bg-gray-50">
+                                <td class="px-4 py-3 text-sm font-medium text-gray-900">
+                                    {{ res.name }}
+                                    <div class="text-xs text-gray-500 truncate max-w-xs" :title="res.server">{{
+                                        res.server }}</div>
+                                </td>
+                                <td class="px-4 py-3 text-sm text-gray-500 uppercase">{{ res.type }}</td>
+                                <td class="px-4 py-3 text-sm">
+                                    <span v-if="res.loading" class="text-gray-500">Testing...</span>
+                                    <span v-else-if="res.status === 'success'"
+                                        class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">Success</span>
+                                    <span v-else
+                                        class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">Failed</span>
+                                </td>
+                                <td class="px-4 py-3 text-sm font-mono">
+                                    <span v-if="res.latency_ms">{{ res.latency_ms }} ms</span>
+                                    <span v-else>-</span>
+                                </td>
+                                <td class="px-4 py-3 text-sm text-gray-500">
+                                    <div v-if="res.answers && res.answers.length">
+                                        <div v-for="ans in res.answers" :key="ans" class="truncate max-w-xs"
+                                            :title="ans">{{ ans }}</div>
+                                    </div>
+                                    <div v-else-if="res.error" class="text-red-600 truncate max-w-xs"
+                                        :title="res.error">
+                                        {{ res.error }}
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, reactive } = Vue
+
+        createApp({
+            setup() {
+                const domain = ref('google.com')
+                const proxy = ref('')
+                const loading = ref(false)
+                const results = ref([])
+                const selectedServerIndices = ref([0, 1, 4, 6])
+                const useCustomServer = ref(false)
+
+                const defaultServers = [
+                    { name: 'Tencent DoH', server: 'https://doh.pub/dns-query', type: 'doh' },
+                    { name: '360 DoH', server: 'https://doh.360.cn', type: 'doh' },
+                    { name: 'Aliyun DoH (Domain)', server: 'https://dns.alidns.com/dns-query', type: 'doh' },
+                    { name: 'Aliyun UDP', server: '223.5.5.5', type: 'udp' },
+                    { name: 'Tencent UDP', server: '119.29.29.29', type: 'udp' },
+                    { name: 'Google UDP', server: '8.8.8.8', type: 'udp' },
+                    { name: 'Cloudflare UDP', server: '1.1.1.1', type: 'udp' }
+                ]
+
+                const customServer = reactive({
+                    server: '',
+                    type: 'udp'
+                })
+
+                const selectAll = () => {
+                    selectedServerIndices.value = defaultServers.map((_, i) => i)
+                }
+
+                const deselectAll = () => {
+                    selectedServerIndices.value = []
+                }
+
+                const runTest = async () => {
+                    loading.value = true
+                    results.value = []
+
+                    const serversToTest = []
+
+                    // Add selected default servers
+                    selectedServerIndices.value.forEach(index => {
+                        serversToTest.push({
+                            ...defaultServers[index],
+                            loading: true,
+                            status: 'pending'
+                        })
+                    })
+
+                    // Add custom server if enabled
+                    if (useCustomServer.value && customServer.server) {
+                        serversToTest.push({
+                            name: 'Custom Server',
+                            server: customServer.server,
+                            type: customServer.type,
+                            loading: true,
+                            status: 'pending'
+                        })
+                    }
+
+                    if (serversToTest.length === 0) {
+                        alert("Please select at least one server.")
+                        loading.value = false
+                        return
+                    }
+
+                    results.value = serversToTest
+
+                    // Run tests concurrently
+                    const promises = serversToTest.map(async (serverItem, index) => {
+                        try {
+                            const response = await fetch('/api/test', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                    type: serverItem.type,
+                                    server: serverItem.server,
+                                    domain: domain.value,
+                                    proxy: proxy.value || null
+                                })
+                            })
+                            const data = await response.json()
+
+                            // Update result in place
+                            results.value[index].loading = false
+                            results.value[index].status = data.status
+                            results.value[index].latency_ms = data.latency_ms
+                            results.value[index].answers = data.answers
+                            results.value[index].error = data.error
+
+                        } catch (e) {
+                            results.value[index].loading = false
+                            results.value[index].status = 'error'
+                            results.value[index].error = e.message
+                        }
+                    })
+
+                    await Promise.all(promises)
+                    loading.value = false
+                }
+
+                return {
+                    domain,
+                    proxy,
+                    loading,
+                    results,
+                    selectedServerIndices,
+                    defaultServers,
+                    useCustomServer,
+                    customServer,
+                    selectAll,
+                    deselectAll,
+                    runTest
+                }
+            }
+        }).mount('#app')
+    </script>
+</body>
+
+</html>

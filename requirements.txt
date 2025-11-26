@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+dnspython
+httpx[http2,socks]
+jinja2
+python-multipart
