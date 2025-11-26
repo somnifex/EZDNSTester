@@ -155,13 +155,15 @@
                 const proxy = ref('')
                 const loading = ref(false)
                 const results = ref([])
-                const selectedServerIndices = ref([0, 1, 2, 3, 4, 5, 6, 7])
+                const selectedServerIndices = ref([0, 1, 2, 5, 6, 7, 8])
                 const useCustomServer = ref(false)
 
                 const defaultServers = [
                     { name: 'Tencent', server: 'https://doh.pub/dns-query', type: 'doh' },
                     { name: '360', server: 'https://doh.360.cn', type: 'doh' },
                     { name: 'Aliyun', server: 'https://dns.alidns.com/dns-query', type: 'doh' },
+                    { name: 'Google', server: 'https://dns.google/dns-query', type: 'doh' },
+                    { name: 'Cloudflare', server: 'https://1.1.1.1/dns-query', type: 'doh' },
                     { name: 'Tencent', server: '119.29.29.29', type: 'udp' },
                     { name: 'Aliyun', server: '223.5.5.5', type: 'udp' },
                     { name: '114DNS', server: '114.114.114.114', type: 'udp' },
