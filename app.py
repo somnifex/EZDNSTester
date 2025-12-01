@@ -15,26 +15,22 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Mount static files for images
 app.mount("/img", StaticFiles(directory="img"), name="img")
 
-# ==================== Models ====================
 
 class TestRequest(BaseModel):
-    type: str  # "udp", "doh", "dot"
+    type: str
     server: str
     domain: str
     proxy: Optional[str] = None
-    record_type: Optional[str] = "A"  # "A" for IPv4, "AAAA" for IPv6, "BOTH" for both
+    record_type: Optional[str] = "A"
+
 
 class QueryRequest(BaseModel):
-    """Request model for /api/query endpoint"""
     domain: str
-    servers: Optional[List[str]] = None  # List of servers in format "type://server" e.g., "doh://https://dns.google/dns-query"
+    servers: Optional[List[str]] = None
     record_type: Optional[str] = "A"
     proxy: Optional[str] = None
-
-# ==================== Default DNS Servers ====================
 
 DEFAULT_SERVERS = [
     {"name": "Tencent-DoH", "server": "https://doh.pub/dns-query", "type": "doh"},
@@ -50,17 +46,14 @@ DEFAULT_SERVERS = [
     {"name": "Cloudflare-UDP", "server": "1.1.1.1", "type": "udp"},
 ]
 
-# ==================== Web UI ====================
 
 @app.get("/", response_class=FileResponse)
 async def read_root():
     return FileResponse("templates/index.html")
 
-# ==================== Original Test API ====================
 
 @app.post("/api/test")
 async def run_test(test_req: TestRequest):
-    # Clean server URL if it contains fragments like #skip-cert-verify=true
     server = test_req.server.split("#")[0]
     record_type = test_req.record_type or "A"
     
@@ -73,17 +66,9 @@ async def run_test(test_req: TestRequest):
     else:
         raise HTTPException(status_code=400, detail="Invalid test type")
 
-# ==================== DoH Server Mode (RFC 8484) ====================
 
 def parse_server_string(server_str: str) -> dict:
-    """
-    Parse server string in format "type://server" or just "server"
-    Examples:
-        - "doh://https://dns.google/dns-query" -> {"type": "doh", "server": "https://dns.google/dns-query"}
-        - "udp://8.8.8.8" -> {"type": "udp", "server": "8.8.8.8"}
-        - "dot://1.1.1.1" -> {"type": "dot", "server": "1.1.1.1"}
-        - "8.8.8.8" -> {"type": "udp", "server": "8.8.8.8"} (default to UDP)
-    """
+    """Parse server string: 'type://server' or plain 'server' (defaults to UDP)."""
     if server_str.startswith("doh://"):
         return {"type": "doh", "server": server_str[6:]}
     elif server_str.startswith("udp://"):
@@ -91,14 +76,10 @@ def parse_server_string(server_str: str) -> dict:
     elif server_str.startswith("dot://"):
         return {"type": "dot", "server": server_str[6:]}
     else:
-        # Default to UDP for plain IP addresses
         return {"type": "udp", "server": server_str}
 
 async def forward_dns_query(wire_data: bytes, upstream: Optional[str] = None, proxy: Optional[str] = None) -> bytes:
-    """
-    Forward DNS query to upstream server and return wire format response.
-    """
-    # Default upstream
+    """Forward DNS query to upstream server and return wire format response."""
     if not upstream:
         upstream = "udp://223.5.5.5"
     
@@ -112,7 +93,6 @@ async def forward_dns_query(wire_data: bytes, upstream: Optional[str] = None, pr
         rdtype = query.question[0].rdtype
         rdtype_str = dns.rdatatype.to_text(rdtype)
         
-        # Perform the actual DNS query
         if server_type == "udp":
             result = dns_tester.test_udp(server, domain.rstrip('.'), rdtype_str)
         elif server_type == "dot":
@@ -122,20 +102,16 @@ async def forward_dns_query(wire_data: bytes, upstream: Optional[str] = None, pr
         else:
             raise ValueError(f"Unknown server type: {server_type}")
         
-        # Build response message
         response = dns.message.make_response(query)
         
         if result.get("status") == "success" and result.get("answers"):
-            # Parse answers and add to response
             for ans in result["answers"]:
-                # Parse "[TYPE] value" format
                 if ans.startswith("["):
                     type_end = ans.index("]")
                     ans_type = ans[1:type_end]
                     ans_value = ans[type_end+2:]
                     
                     ans_rdtype = dns.rdatatype.from_text(ans_type)
-                    # Create RRset and add to answer section
                     rrset = response.find_rrset(
                         response.answer,
                         query.question[0].name,
@@ -143,17 +119,14 @@ async def forward_dns_query(wire_data: bytes, upstream: Optional[str] = None, pr
                         ans_rdtype,
                         create=True
                     )
-                    # Add the record data
                     rd = dns.rdata.from_text(dns.rdataclass.IN, ans_rdtype, ans_value)
                     rrset.add(rd)
         else:
-            # Return SERVFAIL if upstream query failed
             response.set_rcode(dns.rcode.SERVFAIL)
         
         return response.to_wire()
     
     except Exception as e:
-        # Return SERVFAIL on error
         try:
             query = dns.message.from_wire(wire_data)
             response = dns.message.make_response(query)
@@ -165,19 +138,11 @@ async def forward_dns_query(wire_data: bytes, upstream: Optional[str] = None, pr
 @app.get("/dns-query")
 async def doh_get(
     dns: str = Query(..., description="Base64url encoded DNS query"),
-    upstream: Optional[str] = Query(None, description="Upstream DNS server (e.g., udp://8.8.8.8, doh://https://dns.google/dns-query)"),
-    proxy: Optional[str] = Query(None, description="Proxy for DoH upstream (e.g., http://127.0.0.1:7890)")
+    upstream: Optional[str] = Query(None, description="Upstream DNS server"),
+    proxy: Optional[str] = Query(None, description="Proxy for DoH upstream")
 ):
-    """
-    DoH GET endpoint (RFC 8484).
-    Accept Base64url encoded DNS query in 'dns' parameter.
-    
-    Example:
-        curl "http://localhost:8000/dns-query?dns=AAABAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE"
-    """
+    """DoH GET endpoint (RFC 8484)."""
     try:
-        # Decode Base64url
-        # Add padding if needed
         padding = 4 - len(dns) % 4
         if padding != 4:
             dns += "=" * padding
@@ -198,15 +163,7 @@ async def doh_post(
     upstream: Optional[str] = Query(None, description="Upstream DNS server"),
     proxy: Optional[str] = Query(None, description="Proxy for DoH upstream")
 ):
-    """
-    DoH POST endpoint (RFC 8484).
-    Accept DNS wire format in request body with Content-Type: application/dns-message.
-    
-    Example:
-        curl -X POST "http://localhost:8000/dns-query" \
-             -H "Content-Type: application/dns-message" \
-             --data-binary @query.bin
-    """
+    """DoH POST endpoint (RFC 8484)."""
     content_type = request.headers.get("content-type", "")
     if "application/dns-message" not in content_type:
         raise HTTPException(status_code=415, detail="Content-Type must be application/dns-message")
@@ -219,44 +176,21 @@ async def doh_post(
         media_type="application/dns-message"
     )
 
-# ==================== CLI Query API ====================
 
 @app.get("/api/query")
 async def cli_query_get(
     domain: str = Query(..., description="Domain to query"),
-    server: Optional[List[str]] = Query(None, description="DNS servers (format: type://server, e.g., udp://8.8.8.8)"),
-    type: Optional[str] = Query("A", description="Record type: A, AAAA, CNAME, MX, TXT, NS, SOA, BOTH, ALL"),
+    server: Optional[List[str]] = Query(None, description="DNS servers"),
+    type: Optional[str] = Query("A", description="Record type"),
     proxy: Optional[str] = Query(None, description="Proxy for DoH requests"),
     format: Optional[str] = Query("json", description="Output format: json, text, simple")
 ):
-    """
-    CLI-friendly DNS query API (GET).
-    
-    Examples:
-        # Query single server
-        curl "http://localhost:8000/api/query?domain=google.com&server=udp://8.8.8.8"
-        
-        # Query multiple servers
-        curl "http://localhost:8000/api/query?domain=google.com&server=udp://8.8.8.8&server=doh://https://dns.google/dns-query"
-        
-        # Query with proxy
-        curl "http://localhost:8000/api/query?domain=google.com&server=doh://https://dns.google/dns-query&proxy=http://127.0.0.1:7890"
-        
-        # Simple text output for CLI
-        curl "http://localhost:8000/api/query?domain=google.com&format=simple"
-    """
+    """CLI-friendly DNS query API (GET)."""
     return await _perform_query(domain, server, type, proxy, format)
 
 @app.post("/api/query")
 async def cli_query_post(query_req: QueryRequest, format: Optional[str] = Query("json")):
-    """
-    CLI-friendly DNS query API (POST).
-    
-    Example:
-        curl -X POST "http://localhost:8000/api/query" \
-             -H "Content-Type: application/json" \
-             -d '{"domain": "google.com", "servers": ["udp://8.8.8.8", "doh://https://dns.google/dns-query"]}'
-    """
+    """CLI-friendly DNS query API (POST)."""
     return await _perform_query(
         query_req.domain,
         query_req.servers,
@@ -272,18 +206,14 @@ async def _perform_query(
     proxy: Optional[str],
     output_format: Optional[str]
 ):
-    """
-    Internal function to perform DNS query across multiple servers.
-    """
-    # Set defaults
+    """Perform DNS query across multiple servers."""
     if not record_type:
         record_type = "A"
     if not output_format:
         output_format = "json"
     
-    # Use default servers if none specified
     if not servers:
-        servers = [f"{s['type']}://{s['server']}" for s in DEFAULT_SERVERS[:5]]  # Use first 5 default servers
+        servers = [f"{s['type']}://{s['server']}" for s in DEFAULT_SERVERS[:5]]
     
     results = []
     
@@ -315,13 +245,10 @@ async def _perform_query(
                 "error": str(e)
             }
     
-    # Run queries concurrently
     tasks = [query_server(s) for s in servers]
     results = await asyncio.gather(*tasks)
     
-    # Format output
     if output_format == "simple":
-        # Simple text format for CLI
         lines = [f"DNS Query Results for: {domain}", f"Record Type: {record_type}", "=" * 50]
         for r in results:
             status_icon = "✓" if r.get("status") == "success" else "✗"
@@ -339,7 +266,6 @@ async def _perform_query(
         return PlainTextResponse("\n".join(lines))
     
     elif output_format == "text":
-        # Detailed text format
         lines = []
         lines.append(f"╔{'═' * 60}╗")
         lines.append(f"║ DNS Query Results".ljust(61) + "║")
@@ -364,20 +290,16 @@ async def _perform_query(
         return PlainTextResponse("\n".join(lines))
     
     else:
-        # JSON format (default)
         return {
             "domain": domain,
             "record_type": record_type,
             "results": results
         }
 
-# ==================== API Info ====================
 
 @app.get("/api/servers")
 async def list_servers():
-    """
-    List all available default DNS servers.
-    """
+    """List all available default DNS servers."""
     return {
         "servers": DEFAULT_SERVERS,
         "format_hint": "Use 'type://server' format when specifying servers, e.g., 'udp://8.8.8.8' or 'doh://https://dns.google/dns-query'"
@@ -385,9 +307,7 @@ async def list_servers():
 
 @app.get("/api/help")
 async def api_help():
-    """
-    API usage help and examples.
-    """
+    """API usage help and examples."""
     return {
         "endpoints": {
             "/dns-query": {
