@@ -213,4 +213,4 @@ location /dns-query {
 
 ## 开源协议
 
-本项目根据GNU通用公共许可证v3.0授权，详情请参阅[LICENSE]()文件。
+本项目根据GNU通用公共许可证v3.0授权，详情请参阅[LICENSE](../LICENSE)文件。
