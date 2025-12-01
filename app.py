@@ -79,28 +79,46 @@ def parse_server_string(server_str: str) -> dict:
         return {"type": "udp", "server": server_str}
 
 async def forward_dns_query(wire_data: bytes, upstream: Optional[str] = None, proxy: Optional[str] = None) -> bytes:
-    """Forward DNS query to upstream server and return wire format response."""
-    if not upstream:
-        upstream = "udp://223.5.5.5"
-    
-    parsed = parse_server_string(upstream)
-    server_type = parsed["type"]
-    server = parsed["server"]
-    
+
     try:
         query = dns.message.from_wire(wire_data)
         domain = str(query.question[0].name)
         rdtype = query.question[0].rdtype
         rdtype_str = dns.rdatatype.to_text(rdtype)
         
-        if server_type == "udp":
-            result = dns_tester.test_udp(server, domain.rstrip('.'), rdtype_str)
-        elif server_type == "dot":
-            result = dns_tester.test_dot(server, domain.rstrip('.'), rdtype_str)
-        elif server_type == "doh":
-            result = await dns_tester.test_doh(server, domain.rstrip('.'), proxy, rdtype_str)
+        if upstream:
+            parsed = parse_server_string(upstream)
+            server_type = parsed["type"]
+            server = parsed["server"]
+            
+            if server_type == "udp":
+                result = dns_tester.test_udp(server, domain.rstrip('.'), rdtype_str)
+            elif server_type == "dot":
+                result = dns_tester.test_dot(server, domain.rstrip('.'), rdtype_str)
+            elif server_type == "doh":
+                result = await dns_tester.test_doh(server, domain.rstrip('.'), proxy, rdtype_str)
+            else:
+                raise ValueError(f"Unknown server type: {server_type}")
         else:
-            raise ValueError(f"Unknown server type: {server_type}")
+            result = None
+            for s in DEFAULT_SERVERS:
+                server_type = s["type"]
+                server = s["server"]
+                try:
+                    if server_type == "udp":
+                        result = dns_tester.test_udp(server, domain.rstrip('.'), rdtype_str)
+                    elif server_type == "dot":
+                        result = dns_tester.test_dot(server, domain.rstrip('.'), rdtype_str)
+                    elif server_type == "doh":
+                        result = await dns_tester.test_doh(server, domain.rstrip('.'), proxy, rdtype_str)
+                    
+                    if result and result.get("status") == "success" and result.get("answers"):
+                        break
+                except:
+                    continue
+            
+            if not result:
+                result = {"status": "error", "error": "All upstream servers failed"}
         
         response = dns.message.make_response(query)
         
