@@ -1,5 +1,6 @@
 # EZDNSTester
 
+
 [English](../README.md) | [简体中文](README_zh-CN.md)
 
 一款基于 Web 的 DNS 解析测试工具，支持多种协议（UDP 53、DoH、DoT）和服务器测试，并提供完整的 DoH 服务器模式和命令行查询 API。
@@ -72,11 +73,11 @@ curl -X POST "http://localhost:8000/dns-query" \
 
 #### 参数说明
 
-| 参数       | 说明                                    |
-| ---------- | --------------------------------------- |
-| `dns`      | （仅 GET）Base64url 编码的 DNS 查询     |
-| `upstream` | 上游 DNS 服务器（格式：`type://server`）|
-| `proxy`    | DoH 上游请求的代理服务器                |
+| 参数         | 说明                                       |
+| ------------ | ------------------------------------------ |
+| `dns`      | （仅 GET）Base64url 编码的 DNS 查询        |
+| `upstream` | 上游 DNS 服务器（格式：`type://server`） |
+| `proxy`    | DoH 上游请求的代理服务器                   |
 
 ### 2. 命令行查询 API (`/api/query`)
 
@@ -119,13 +120,13 @@ curl -X POST "http://localhost:8000/api/query" \
 
 #### 参数说明
 
-| 参数       | 说明                                                                                     |
-| ---------- | ---------------------------------------------------------------------------------------- |
-| `domain`   | 要查询的域名（必填）                                                                     |
-| `server`   | DNS 服务器，格式为 `type://server`（可指定多个）                                        |
-| `type`     | 记录类型：`A`、`AAAA`、`CNAME`、`MX`、`TXT`、`NS`、`SOA`、`BOTH`、`ALL`                  |
-| `proxy`    | DoH 请求的代理服务器                                                                     |
-| `format`   | 输出格式：`json`（默认）、`text`、`simple`                                               |
+| 参数       | 说明                                                                                      |
+| ---------- | ----------------------------------------------------------------------------------------- |
+| `domain` | 要查询的域名（必填）                                                                      |
+| `server` | DNS 服务器，格式为 `type://server`（可指定多个）                                        |
+| `type`   | 记录类型：`A`、`AAAA`、`CNAME`、`MX`、`TXT`、`NS`、`SOA`、`BOTH`、`ALL` |
+| `proxy`  | DoH 请求的代理服务器                                                                      |
+| `format` | 输出格式：`json`（默认）、`text`、`simple`                                          |
 
 #### 输出格式
 
@@ -177,11 +178,11 @@ curl "http://localhost:8000/api/help"
 
 指定 DNS 服务器时，请使用 `type://server` 格式：
 
-| 类型    | 说明                  | 示例                                   |
-| ------- | --------------------- | -------------------------------------- |
-| `udp`   | UDP DNS（端口 53）    | `udp://8.8.8.8`                        |
-| `dot`   | DNS over TLS（端口 853）| `dot://1.1.1.1`                      |
-| `doh`   | DNS over HTTPS        | `doh://https://dns.google/dns-query`   |
+| 类型    | 说明                     | 示例                                   |
+| ------- | ------------------------ | -------------------------------------- |
+| `udp` | UDP DNS（端口 53）       | `udp://8.8.8.8`                      |
+| `dot` | DNS over TLS（端口 853） | `dot://1.1.1.1`                      |
+| `doh` | DNS over HTTPS           | `doh://https://dns.google/dns-query` |
 
 如果未指定类型前缀，默认使用 `udp`。
 
@@ -212,4 +213,4 @@ location /dns-query {
 
 ## 开源协议
 
-MIT
+本项目根据GNU通用公共许可证v3.0授权，详情请参阅[LICENSE]()文件。

@@ -1,5 +1,6 @@
 # EZDNSTester
 
+
 [English](README.md) | [简体中文](docs/README_zh-CN.md)
 
 A web-based tool to test DNS resolution across different protocols (UDP 53, DoH, DoT) and servers, with full API support for DoH server mode and CLI queries.
@@ -212,4 +213,4 @@ location /dns-query {
 
 ## License
 
-MIT
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
