@@ -1,4 +1,4 @@
-# DNS 解析测试工具
+# EZDNSTester
 
 [English](../README.md) | [简体中文](README_zh-CN.md)
 
