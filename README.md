@@ -1,6 +1,6 @@
 # DNS Resolution Tester
 
-[English](README.md) | [简体中文](README_zh-CN.md)
+[English](README.md) | [简体中文](docs/README_zh-CN.md)
 
 A web-based tool to test DNS resolution across different protocols (UDP 53, DoH, DoT) and servers, with full API support for DoH server mode and CLI queries.
 
