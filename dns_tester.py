@@ -28,10 +28,11 @@ def test_udp(server_ip: str, domain: str, record_type: str = "A", timeout: float
             duration = (time.time() - start_time) * 1000
             total_duration += duration
             
-            type_label = "A" if rdtype == dns.rdatatype.A else "AAAA"
             for rrset in response.answer:
+                # Get the actual record type from the response
+                actual_type = dns.rdatatype.to_text(rrset.rdtype)
                 for rr in rrset:
-                    answers.append(f"[{type_label}] {str(rr)}")
+                    answers.append(f"[{actual_type}] {str(rr)}")
                 
         return {
             "status": "success",
@@ -78,10 +79,11 @@ def test_dot(server_ip: str, domain: str, record_type: str = "A", timeout: float
             duration = (time.time() - start_time) * 1000
             total_duration += duration
             
-            type_label = "A" if rdtype == dns.rdatatype.A else "AAAA"
             for rrset in response.answer:
+                # Get the actual record type from the response
+                actual_type = dns.rdatatype.to_text(rrset.rdtype)
                 for rr in rrset:
-                    answers.append(f"[{type_label}] {str(rr)}")
+                    answers.append(f"[{actual_type}] {str(rr)}")
                 
         return {
             "status": "success",
@@ -141,10 +143,11 @@ async def test_doh(url: str, domain: str, proxy: str = None, record_type: str = 
                 duration = (time.time() - start_time) * 1000
                 total_duration += duration
                 
-                type_label = "A" if rdtype == dns.rdatatype.A else "AAAA"
                 for rrset in response.answer:
+                    # Get the actual record type from the response
+                    actual_type = dns.rdatatype.to_text(rrset.rdtype)
                     for rr in rrset:
-                        answers.append(f"[{type_label}] {str(rr)}")
+                        answers.append(f"[{actual_type}] {str(rr)}")
                 
         return {
             "status": "success",

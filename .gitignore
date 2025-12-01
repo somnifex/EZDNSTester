@@ -15,6 +15,7 @@ env/
 # IDEs
 .vscode/
 .idea/
+.history/
 
 # OS
 .DS_Store
