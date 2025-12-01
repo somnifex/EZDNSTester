@@ -6,20 +6,29 @@ import time
 import socket
 import ssl
 
-def test_udp(server_ip: str, domain: str, record_type: str = "A", timeout: float = 5.0):
+def test_udp(server_ip: str, domain: str, record_type: str = "ALL", timeout: float = 5.0):
+    """
+    Test DNS resolution via UDP.
+    record_type: "A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "ALL"
+    """
     try:
         answers = []
         total_duration = 0
         
-        rdtypes = []
-        if record_type == "A":
-            rdtypes = [dns.rdatatype.A]
-        elif record_type == "AAAA":
-            rdtypes = [dns.rdatatype.AAAA]
-        elif record_type == "BOTH":
-            rdtypes = [dns.rdatatype.A, dns.rdatatype.AAAA]
-        else:
-            rdtypes = [dns.rdatatype.A]
+        # Map record types to dns.rdatatype
+        type_map = {
+            "A": [dns.rdatatype.A],
+            "AAAA": [dns.rdatatype.AAAA],
+            "CNAME": [dns.rdatatype.CNAME],
+            "MX": [dns.rdatatype.MX],
+            "TXT": [dns.rdatatype.TXT],
+            "NS": [dns.rdatatype.NS],
+            "SOA": [dns.rdatatype.SOA],
+            "BOTH": [dns.rdatatype.A, dns.rdatatype.AAAA],
+            "ALL": [dns.rdatatype.A, dns.rdatatype.AAAA, dns.rdatatype.CNAME, dns.rdatatype.MX, dns.rdatatype.TXT, dns.rdatatype.NS],
+        }
+        
+        rdtypes = type_map.get(record_type, [dns.rdatatype.A])
         
         for rdtype in rdtypes:
             start_time = time.time()
@@ -47,24 +56,29 @@ def test_udp(server_ip: str, domain: str, record_type: str = "A", timeout: float
             "server": server_ip
         }
 
-def test_dot(server_ip: str, domain: str, record_type: str = "A", timeout: float = 5.0):
+def test_dot(server_ip: str, domain: str, record_type: str = "ALL", timeout: float = 5.0):
     """
     Test DNS resolution via DoT (DNS over TLS).
-    record_type: "A" for IPv4, "AAAA" for IPv6, "BOTH" for both
+    record_type: "A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "ALL"
     """
     try:
         answers = []
         total_duration = 0
         
-        rdtypes = []
-        if record_type == "A":
-            rdtypes = [dns.rdatatype.A]
-        elif record_type == "AAAA":
-            rdtypes = [dns.rdatatype.AAAA]
-        elif record_type == "BOTH":
-            rdtypes = [dns.rdatatype.A, dns.rdatatype.AAAA]
-        else:
-            rdtypes = [dns.rdatatype.A]
+        # Map record types to dns.rdatatype
+        type_map = {
+            "A": [dns.rdatatype.A],
+            "AAAA": [dns.rdatatype.AAAA],
+            "CNAME": [dns.rdatatype.CNAME],
+            "MX": [dns.rdatatype.MX],
+            "TXT": [dns.rdatatype.TXT],
+            "NS": [dns.rdatatype.NS],
+            "SOA": [dns.rdatatype.SOA],
+            "BOTH": [dns.rdatatype.A, dns.rdatatype.AAAA],
+            "ALL": [dns.rdatatype.A, dns.rdatatype.AAAA, dns.rdatatype.CNAME, dns.rdatatype.MX, dns.rdatatype.TXT, dns.rdatatype.NS],
+        }
+        
+        rdtypes = type_map.get(record_type, [dns.rdatatype.A])
         
         # Create a simplified SSL context that doesn't verify certificates strictly
         # This allows testing servers with self-signed or invalid certificates
@@ -98,24 +112,29 @@ def test_dot(server_ip: str, domain: str, record_type: str = "A", timeout: float
             "server": server_ip
         }
 
-async def test_doh(url: str, domain: str, proxy: str = None, record_type: str = "A", timeout: float = 5.0):
+async def test_doh(url: str, domain: str, proxy: str = None, record_type: str = "ALL", timeout: float = 5.0):
     """
     Test DNS resolution via DoH (DNS over HTTPS).
-    record_type: "A" for IPv4, "AAAA" for IPv6, "BOTH" for both
+    record_type: "A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA", "ALL"
     """
     try:
         answers = []
         total_duration = 0
         
-        rdtypes = []
-        if record_type == "A":
-            rdtypes = [dns.rdatatype.A]
-        elif record_type == "AAAA":
-            rdtypes = [dns.rdatatype.AAAA]
-        elif record_type == "BOTH":
-            rdtypes = [dns.rdatatype.A, dns.rdatatype.AAAA]
-        else:
-            rdtypes = [dns.rdatatype.A]
+        # Map record types to dns.rdatatype
+        type_map = {
+            "A": [dns.rdatatype.A],
+            "AAAA": [dns.rdatatype.AAAA],
+            "CNAME": [dns.rdatatype.CNAME],
+            "MX": [dns.rdatatype.MX],
+            "TXT": [dns.rdatatype.TXT],
+            "NS": [dns.rdatatype.NS],
+            "SOA": [dns.rdatatype.SOA],
+            "BOTH": [dns.rdatatype.A, dns.rdatatype.AAAA],
+            "ALL": [dns.rdatatype.A, dns.rdatatype.AAAA, dns.rdatatype.CNAME, dns.rdatatype.MX, dns.rdatatype.TXT, dns.rdatatype.NS],
+        }
+        
+        rdtypes = type_map.get(record_type, [dns.rdatatype.A])
         
         headers = {
             "Content-Type": "application/dns-message",
