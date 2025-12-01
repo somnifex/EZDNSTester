@@ -197,10 +197,11 @@
                 const recordType = ref('BOTH')
                 const loading = ref(false)
                 const results = ref([])
-                const selectedServerIndices = ref([0, 1, 2, 5, 6, 7, 8])
+                const selectedServerIndices = ref([0, 1, 2, 3, 6, 7, 8, 9])
                 const useCustomServer = ref(false)
 
                 const defaultServers = [
+                    { name: 'Local', server: 'local', type: 'local' },
                     { name: 'Tencent', server: 'https://doh.pub/dns-query', type: 'doh' },
                     { name: '360', server: 'https://doh.360.cn', type: 'doh' },
                     { name: 'Aliyun', server: 'https://dns.alidns.com/dns-query', type: 'doh' },

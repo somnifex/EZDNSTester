@@ -33,6 +33,7 @@ class QueryRequest(BaseModel):
     proxy: Optional[str] = None
 
 DEFAULT_SERVERS = [
+    {"name": "Local", "server": "local", "type": "local"},
     {"name": "Tencent-DoH", "server": "https://doh.pub/dns-query", "type": "doh"},
     {"name": "360-DoH", "server": "https://doh.360.cn", "type": "doh"},
     {"name": "Aliyun-DoH", "server": "https://dns.alidns.com/dns-query", "type": "doh"},
@@ -57,7 +58,9 @@ async def run_test(test_req: TestRequest):
     server = test_req.server.split("#")[0]
     record_type = test_req.record_type or "A"
     
-    if test_req.type == "udp":
+    if test_req.type == "local":
+        return dns_tester.test_local(test_req.domain, record_type)
+    elif test_req.type == "udp":
         return dns_tester.test_udp(server, test_req.domain, record_type)
     elif test_req.type == "dot":
         return dns_tester.test_dot(server, test_req.domain, record_type)
@@ -69,7 +72,9 @@ async def run_test(test_req: TestRequest):
 
 def parse_server_string(server_str: str) -> dict:
     """Parse server string: 'type://server' or plain 'server' (defaults to UDP)."""
-    if server_str.startswith("doh://"):
+    if server_str.startswith("local://") or server_str == "local":
+        return {"type": "local", "server": "local"}
+    elif server_str.startswith("doh://"):
         return {"type": "doh", "server": server_str[6:]}
     elif server_str.startswith("udp://"):
         return {"type": "udp", "server": server_str[6:]}
@@ -91,7 +96,9 @@ async def forward_dns_query(wire_data: bytes, upstream: Optional[str] = None, pr
             server_type = parsed["type"]
             server = parsed["server"]
             
-            if server_type == "udp":
+            if server_type == "local":
+                result = dns_tester.test_local(domain.rstrip('.'), rdtype_str)
+            elif server_type == "udp":
                 result = dns_tester.test_udp(server, domain.rstrip('.'), rdtype_str)
             elif server_type == "dot":
                 result = dns_tester.test_dot(server, domain.rstrip('.'), rdtype_str)
@@ -105,7 +112,9 @@ async def forward_dns_query(wire_data: bytes, upstream: Optional[str] = None, pr
                 server_type = s["type"]
                 server = s["server"]
                 try:
-                    if server_type == "udp":
+                    if server_type == "local":
+                        result = dns_tester.test_local(domain.rstrip('.'), rdtype_str)
+                    elif server_type == "udp":
                         result = dns_tester.test_udp(server, domain.rstrip('.'), rdtype_str)
                     elif server_type == "dot":
                         result = dns_tester.test_dot(server, domain.rstrip('.'), rdtype_str)
@@ -241,7 +250,9 @@ async def _perform_query(
         server = parsed["server"]
         
         try:
-            if server_type == "udp":
+            if server_type == "local":
+                result = dns_tester.test_local(domain, record_type)
+            elif server_type == "udp":
                 result = dns_tester.test_udp(server, domain, record_type)
             elif server_type == "dot":
                 result = dns_tester.test_dot(server, domain, record_type)

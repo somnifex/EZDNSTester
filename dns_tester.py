@@ -1,6 +1,7 @@
 import dns.message
 import dns.query
 import dns.rdatatype
+import dns.resolver
 import httpx
 import time
 import ssl
@@ -161,4 +162,56 @@ async def test_doh(url: str, domain: str, proxy: str | None = None, record_type:
             "status": "error",
             "error": str(e),
             "server": url
+        }
+
+def test_local(domain: str, record_type: str = "ALL", timeout: float = 5.0):
+    """Test DNS resolution via system default resolver."""
+    try:
+        answers = []
+        total_duration = 0
+        
+        type_map = {
+            "A": [dns.rdatatype.A],
+            "AAAA": [dns.rdatatype.AAAA],
+            "CNAME": [dns.rdatatype.CNAME],
+            "MX": [dns.rdatatype.MX],
+            "TXT": [dns.rdatatype.TXT],
+            "NS": [dns.rdatatype.NS],
+            "SOA": [dns.rdatatype.SOA],
+            "BOTH": [dns.rdatatype.A, dns.rdatatype.AAAA],
+            "ALL": [dns.rdatatype.A, dns.rdatatype.AAAA, dns.rdatatype.CNAME, dns.rdatatype.MX, dns.rdatatype.TXT, dns.rdatatype.NS],
+        }
+        
+        rdtypes = type_map.get(record_type, [dns.rdatatype.A])
+        resolver = dns.resolver.Resolver()
+        resolver.timeout = timeout
+        resolver.lifetime = timeout
+        
+        for rdtype in rdtypes:
+            try:
+                start_time = time.time()
+                response = resolver.resolve(domain, dns.rdatatype.to_text(rdtype))
+                duration = (time.time() - start_time) * 1000
+                total_duration += duration
+                
+                actual_type = dns.rdatatype.to_text(response.rdtype)
+                if response.rdtype == rdtype or record_type == "ALL":
+                    for rr in response:
+                        answers.append(f"[{actual_type}] {str(rr)}")
+            except dns.resolver.NoAnswer:
+                continue
+            except dns.resolver.NXDOMAIN:
+                continue
+                
+        return {
+            "status": "success",
+            "latency_ms": round(total_duration, 2),
+            "answers": answers,
+            "server": "local"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "server": "local"
         }
