@@ -1,245 +1,258 @@
+from typing import Optional
+
+import ipaddress
+import ssl
+import time
+
 import dns.message
 import dns.query
 import dns.rdatatype
 import dns.resolver
 import httpx
-import time
-import ssl
+
+DEFAULT_RECORD_TYPE = "A"
+RECORD_TYPES = {
+    "A": [dns.rdatatype.A],
+    "AAAA": [dns.rdatatype.AAAA],
+    "CNAME": [dns.rdatatype.CNAME],
+    "MX": [dns.rdatatype.MX],
+    "TXT": [dns.rdatatype.TXT],
+    "NS": [dns.rdatatype.NS],
+    "SOA": [dns.rdatatype.SOA],
+    "BOTH": [dns.rdatatype.A, dns.rdatatype.AAAA],
+    "ALL": [
+        dns.rdatatype.A,
+        dns.rdatatype.AAAA,
+        dns.rdatatype.CNAME,
+        dns.rdatatype.MX,
+        dns.rdatatype.TXT,
+        dns.rdatatype.NS,
+    ],
+}
+DOH_HEADERS = {
+    "Content-Type": "application/dns-message",
+    "Accept": "application/dns-message",
+}
+
+
+def _parse_dns_endpoint(server: str, default_port: int) -> tuple[str, int]:
+    server = server.strip()
+    if not server:
+        raise ValueError("DNS server cannot be empty")
+
+    if server.startswith("["):
+        if "]" not in server:
+            raise ValueError("Invalid IPv6 server format. Use [IPv6] or [IPv6]:port.")
+
+        host, remainder = server[1:].split("]", 1)
+        port = default_port
+        if remainder:
+            if not remainder.startswith(":"):
+                raise ValueError(
+                    "Invalid IPv6 server format. Use [IPv6] or [IPv6]:port."
+                )
+
+            port_text = remainder[1:]
+            if not port_text.isdigit():
+                raise ValueError(f"Invalid port in server '{server}'")
+            port = int(port_text)
+    else:
+        colon_count = server.count(":")
+        if colon_count == 0:
+            host = server
+            port = default_port
+        elif colon_count == 1:
+            host, port_text = server.rsplit(":", 1)
+            if not host or not port_text.isdigit():
+                raise ValueError(
+                    "Invalid server format. Use host, host:port, or [IPv6]:port."
+                )
+            port = int(port_text)
+        else:
+            try:
+                ipaddress.IPv6Address(server)
+                host = server
+                port = default_port
+            except ValueError as exc:
+                raise ValueError(
+                    "Invalid server format. Use host, host:port, or [IPv6]:port."
+                ) from exc
+
+    if not 1 <= port <= 65535:
+        raise ValueError(f"Port must be between 1 and 65535: {port}")
+
+    return host, port
+
+
+def _normalize_record_type(record_type: Optional[str]) -> str:
+    return (record_type or DEFAULT_RECORD_TYPE).upper()
+
+
+def _resolve_record_types(record_type: Optional[str]) -> list[int]:
+    normalized = _normalize_record_type(record_type)
+    return RECORD_TYPES.get(normalized, RECORD_TYPES[DEFAULT_RECORD_TYPE])
+
+
+def _collect_message_answers(
+    answer_sections, requested_type: int, include_all: bool
+) -> list[str]:
+    answers = []
+    for rrset in answer_sections:
+        if rrset.rdtype != requested_type and not include_all:
+            continue
+
+        actual_type = dns.rdatatype.to_text(rrset.rdtype)
+        answers.extend(f"[{actual_type}] {rr}" for rr in rrset)
+    return answers
+
+
+def _collect_resolver_answers(
+    response, requested_type: int, include_all: bool
+) -> list[str]:
+    if response.rdtype != requested_type and not include_all:
+        return []
+
+    actual_type = dns.rdatatype.to_text(response.rdtype)
+    return [f"[{actual_type}] {rr}" for rr in response]
+
+
+def _success_result(server: str, total_duration: float, answers: list[str]) -> dict:
+    return {
+        "status": "success",
+        "latency_ms": round(total_duration, 2),
+        "answers": answers,
+        "server": server,
+    }
+
+
+def _error_result(server: str, exc: Exception) -> dict:
+    return {"status": "error", "error": str(exc), "server": server}
 
 
 def test_udp(
     server_ip: str, domain: str, record_type: str = "ALL", timeout: float = 5.0
 ):
-    """Test DNS resolution via UDP."""
+    """Resolve DNS records over UDP."""
     try:
         answers = []
-        total_duration = 0
+        total_duration = 0.0
+        normalized_record_type = _normalize_record_type(record_type)
+        include_all = normalized_record_type == "ALL"
+        server_host, server_port = _parse_dns_endpoint(server_ip, 53)
 
-        type_map = {
-            "A": [dns.rdatatype.A],
-            "AAAA": [dns.rdatatype.AAAA],
-            "CNAME": [dns.rdatatype.CNAME],
-            "MX": [dns.rdatatype.MX],
-            "TXT": [dns.rdatatype.TXT],
-            "NS": [dns.rdatatype.NS],
-            "SOA": [dns.rdatatype.SOA],
-            "BOTH": [dns.rdatatype.A, dns.rdatatype.AAAA],
-            "ALL": [
-                dns.rdatatype.A,
-                dns.rdatatype.AAAA,
-                dns.rdatatype.CNAME,
-                dns.rdatatype.MX,
-                dns.rdatatype.TXT,
-                dns.rdatatype.NS,
-            ],
-        }
-
-        rdtypes = type_map.get(record_type, [dns.rdatatype.A])
-
-        for rdtype in rdtypes:
-            start_time = time.time()
+        for rdtype in _resolve_record_types(normalized_record_type):
             query = dns.message.make_query(domain, rdtype)
-            response = dns.query.udp(query, server_ip, timeout=timeout)
-            duration = (time.time() - start_time) * 1000
-            total_duration += duration
+            start_time = time.perf_counter()
+            response = dns.query.udp(
+                query,
+                server_host,
+                port=server_port,
+                timeout=timeout,
+            )
+            total_duration += (time.perf_counter() - start_time) * 1000
+            answers.extend(_collect_message_answers(response.answer, rdtype, include_all))
 
-            for rrset in response.answer:
-                actual_type = dns.rdatatype.to_text(rrset.rdtype)
-                if rrset.rdtype == rdtype or record_type == "ALL":
-                    for rr in rrset:
-                        answers.append(f"[{actual_type}] {str(rr)}")
-
-        return {
-            "status": "success",
-            "latency_ms": round(total_duration, 2),
-            "answers": answers,
-            "server": server_ip,
-        }
-    except Exception as e:
-        return {"status": "error", "error": str(e), "server": server_ip}
+        return _success_result(server_ip, total_duration, answers)
+    except Exception as exc:
+        return _error_result(server_ip, exc)
 
 
 def test_dot(
     server_ip: str, domain: str, record_type: str = "ALL", timeout: float = 5.0
 ):
-    """Test DNS resolution via DoT (DNS over TLS)."""
+    """Resolve DNS records over DNS over TLS."""
     try:
         answers = []
-        total_duration = 0
-
-        type_map = {
-            "A": [dns.rdatatype.A],
-            "AAAA": [dns.rdatatype.AAAA],
-            "CNAME": [dns.rdatatype.CNAME],
-            "MX": [dns.rdatatype.MX],
-            "TXT": [dns.rdatatype.TXT],
-            "NS": [dns.rdatatype.NS],
-            "SOA": [dns.rdatatype.SOA],
-            "BOTH": [dns.rdatatype.A, dns.rdatatype.AAAA],
-            "ALL": [
-                dns.rdatatype.A,
-                dns.rdatatype.AAAA,
-                dns.rdatatype.CNAME,
-                dns.rdatatype.MX,
-                dns.rdatatype.TXT,
-                dns.rdatatype.NS,
-            ],
-        }
-
-        rdtypes = type_map.get(record_type, [dns.rdatatype.A])
+        total_duration = 0.0
+        normalized_record_type = _normalize_record_type(record_type)
+        include_all = normalized_record_type == "ALL"
+        server_host, server_port = _parse_dns_endpoint(server_ip, 853)
 
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
 
-        for rdtype in rdtypes:
-            start_time = time.time()
+        for rdtype in _resolve_record_types(normalized_record_type):
             query = dns.message.make_query(domain, rdtype)
+            start_time = time.perf_counter()
             response = dns.query.tls(
-                query, server_ip, timeout=timeout, ssl_context=context
+                query,
+                server_host,
+                port=server_port,
+                timeout=timeout,
+                ssl_context=context,
             )
-            duration = (time.time() - start_time) * 1000
-            total_duration += duration
+            total_duration += (time.perf_counter() - start_time) * 1000
+            answers.extend(_collect_message_answers(response.answer, rdtype, include_all))
 
-            for rrset in response.answer:
-                actual_type = dns.rdatatype.to_text(rrset.rdtype)
-                if rrset.rdtype == rdtype or record_type == "ALL":
-                    for rr in rrset:
-                        answers.append(f"[{actual_type}] {str(rr)}")
-
-        return {
-            "status": "success",
-            "latency_ms": round(total_duration, 2),
-            "answers": answers,
-            "server": server_ip,
-        }
-    except Exception as e:
-        return {"status": "error", "error": str(e), "server": server_ip}
+        return _success_result(server_ip, total_duration, answers)
+    except Exception as exc:
+        return _error_result(server_ip, exc)
 
 
 async def test_doh(
     url: str,
     domain: str,
-    proxy: str | None = None,
+    proxy: Optional[str] = None,
     record_type: str = "ALL",
     timeout: float = 5.0,
 ):
-    """Test DNS resolution via DoH (DNS over HTTPS)."""
+    """Resolve DNS records over DNS over HTTPS."""
     try:
         answers = []
-        total_duration = 0
-
-        type_map = {
-            "A": [dns.rdatatype.A],
-            "AAAA": [dns.rdatatype.AAAA],
-            "CNAME": [dns.rdatatype.CNAME],
-            "MX": [dns.rdatatype.MX],
-            "TXT": [dns.rdatatype.TXT],
-            "NS": [dns.rdatatype.NS],
-            "SOA": [dns.rdatatype.SOA],
-            "BOTH": [dns.rdatatype.A, dns.rdatatype.AAAA],
-            "ALL": [
-                dns.rdatatype.A,
-                dns.rdatatype.AAAA,
-                dns.rdatatype.CNAME,
-                dns.rdatatype.MX,
-                dns.rdatatype.TXT,
-                dns.rdatatype.NS,
-            ],
-        }
-
-        rdtypes = type_map.get(record_type, [dns.rdatatype.A])
-
-        headers = {
-            "Content-Type": "application/dns-message",
-            "Accept": "application/dns-message",
-        }
+        total_duration = 0.0
+        normalized_record_type = _normalize_record_type(record_type)
+        include_all = normalized_record_type == "ALL"
 
         client_kwargs = {"verify": False, "timeout": timeout}
         if proxy:
             client_kwargs["proxy"] = proxy
 
         async with httpx.AsyncClient(**client_kwargs) as client:
-            for rdtype in rdtypes:
-                start_time = time.time()
-
+            for rdtype in _resolve_record_types(normalized_record_type):
                 query = dns.message.make_query(domain, rdtype)
-                wire_data = query.to_wire()
+                start_time = time.perf_counter()
+                response = await client.post(
+                    url,
+                    content=query.to_wire(),
+                    headers=DOH_HEADERS,
+                )
+                response.raise_for_status()
+                total_duration += (time.perf_counter() - start_time) * 1000
 
-                resp = await client.post(url, content=wire_data, headers=headers)
-                resp.raise_for_status()
+                message = dns.message.from_wire(response.content)
+                answers.extend(
+                    _collect_message_answers(message.answer, rdtype, include_all)
+                )
 
-                response = dns.message.from_wire(resp.content)
-                duration = (time.time() - start_time) * 1000
-                total_duration += duration
-
-                for rrset in response.answer:
-                    actual_type = dns.rdatatype.to_text(rrset.rdtype)
-                    if rrset.rdtype == rdtype or record_type == "ALL":
-                        for rr in rrset:
-                            answers.append(f"[{actual_type}] {str(rr)}")
-
-        return {
-            "status": "success",
-            "latency_ms": round(total_duration, 2),
-            "answers": answers,
-            "server": url,
-        }
-    except Exception as e:
-        return {"status": "error", "error": str(e), "server": url}
+        return _success_result(url, total_duration, answers)
+    except Exception as exc:
+        return _error_result(url, exc)
 
 
 def test_local(domain: str, record_type: str = "ALL", timeout: float = 5.0):
-    """Test DNS resolution via system default resolver."""
+    """Resolve DNS records with the system resolver."""
     try:
         answers = []
-        total_duration = 0
+        total_duration = 0.0
+        normalized_record_type = _normalize_record_type(record_type)
+        include_all = normalized_record_type == "ALL"
 
-        type_map = {
-            "A": [dns.rdatatype.A],
-            "AAAA": [dns.rdatatype.AAAA],
-            "CNAME": [dns.rdatatype.CNAME],
-            "MX": [dns.rdatatype.MX],
-            "TXT": [dns.rdatatype.TXT],
-            "NS": [dns.rdatatype.NS],
-            "SOA": [dns.rdatatype.SOA],
-            "BOTH": [dns.rdatatype.A, dns.rdatatype.AAAA],
-            "ALL": [
-                dns.rdatatype.A,
-                dns.rdatatype.AAAA,
-                dns.rdatatype.CNAME,
-                dns.rdatatype.MX,
-                dns.rdatatype.TXT,
-                dns.rdatatype.NS,
-            ],
-        }
-
-        rdtypes = type_map.get(record_type, [dns.rdatatype.A])
         resolver = dns.resolver.Resolver()
         resolver.timeout = timeout
         resolver.lifetime = timeout
 
-        for rdtype in rdtypes:
+        for rdtype in _resolve_record_types(normalized_record_type):
             try:
-                start_time = time.time()
+                start_time = time.perf_counter()
                 response = resolver.resolve(domain, dns.rdatatype.to_text(rdtype))
-                duration = (time.time() - start_time) * 1000
-                total_duration += duration
-
-                actual_type = dns.rdatatype.to_text(response.rdtype)
-                if response.rdtype == rdtype or record_type == "ALL":
-                    for rr in response:
-                        answers.append(f"[{actual_type}] {str(rr)}")
+                total_duration += (time.perf_counter() - start_time) * 1000
+                answers.extend(_collect_resolver_answers(response, rdtype, include_all))
             except dns.resolver.NoAnswer:
                 continue
             except dns.resolver.NXDOMAIN:
                 continue
 
-        return {
-            "status": "success",
-            "latency_ms": round(total_duration, 2),
-            "answers": answers,
-            "server": "local",
-        }
-    except Exception as e:
-        return {"status": "error", "error": str(e), "server": "local"}
+        return _success_result("local", total_duration, answers)
+    except Exception as exc:
+        return _error_result("local", exc)

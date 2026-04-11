@@ -1,201 +1,138 @@
 # EZDNSTester
 
-
-
 [English](README.md) | [简体中文](docs/README_zh-CN.md)
 
-A web-based tool to test DNS resolution across different protocols (UDP 53, DoH, DoT) and servers, with full API support for DoH server mode and CLI queries.
+EZDNSTester is a small FastAPI app for checking how different DNS resolvers answer the same query. It supports local resolution, plain UDP DNS, DNS over TLS, and DNS over HTTPS, with both a browser UI and API endpoints for scripts or terminal use.
 
-## Features
+## What It Does
 
-- **Multi-Protocol Support**: Test DNS resolution using UDP, DNS over HTTPS (DoH), and DNS over TLS (DoT).
-- **Multi-Server Testing**: Run concurrent tests against multiple DNS servers.
-- **Proxy Support**: Optional HTTP/HTTPS proxy support for DoH requests.
-- **Web Interface**: Clean and responsive UI built with Vue.js and Tailwind CSS.
-- **DoH Server Mode**: Act as a DoH server (RFC 8484 compliant) with configurable upstream.
-- **CLI Query API**: Query multiple DNS servers via API with formatted output for command line use.
-- **Docker Ready**: Easily deployable using Docker and Docker Compose.
+- Compare several DNS servers in one run
+- Test DoH requests through an HTTP or HTTPS proxy
+- Expose a DoH-compatible forwarding endpoint
+- Return JSON, simple text, or formatted text for CLI use
+- Run locally with Python or inside Docker
 
-## Prerequisites
+## Quick Start
 
-- Python 3.9+
-- Docker (optional)
-
-## Installation & Usage
-
-### Local Development
-
-1. **Clone the repository**
-2. **Install dependencies** (using `uv` or `pip`):
-   ```bash
-   uv venv
-   uv pip install -r requirements.txt
-   ```
-3. **Run the application**:
-   ```bash
-   uv run uvicorn app:app --host 0.0.0.0 --port 8000
-   ```
-4. Open [http://localhost:8000](http://localhost:8000) in your browser.
-
-### Docker Deployment
-
-1. **Build and run using Docker Compose**:
-   ```bash
-   docker-compose up --build
-   ```
-2. Open [http://localhost:8000](http://localhost:8000) in your browser.
-
-## API Reference
-
-### 1. DoH Server Mode (`/dns-query`)
-
-EZDNSTester can act as a DoH (DNS over HTTPS) server compliant with RFC 8484. You can use it as an upstream DoH server for clients (requires reverse proxy for TLS).
-
-#### GET Method
+### Local
 
 ```bash
-# Basic DoH query (Base64url encoded DNS message)
-curl "http://localhost:8000/dns-query?dns=AAABAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE"
-
-# With custom upstream server
-curl "http://localhost:8000/dns-query?dns=...&upstream=udp://8.8.8.8"
-
-# With DoH upstream and proxy
-curl "http://localhost:8000/dns-query?dns=...&upstream=doh://https://dns.google/dns-query&proxy=http://127.0.0.1:7890"
+uv venv
+uv pip install -r requirements.txt
+uv run uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-#### POST Method
+Open `http://localhost:8000`.
+
+### Docker
 
 ```bash
-curl -X POST "http://localhost:8000/dns-query" \
-     -H "Content-Type: application/dns-message" \
-     --data-binary @query.bin
+docker-compose up --build
 ```
 
-#### Parameters
+## Server Strings
 
-| Parameter    | Description                                    |
-| ------------ | ---------------------------------------------- |
-| `dns`      | (GET only) Base64url encoded DNS query         |
-| `upstream` | Upstream DNS server (format:`type://server`) |
-| `proxy`    | Proxy for DoH upstream requests                |
+When an endpoint expects a DNS server, use `type://server`.
 
-### 2. CLI Query API (`/api/query`)
+| Type    | Meaning                          | Examples                                                                   |
+| ------- | -------------------------------- | -------------------------------------------------------------------------- |
+| `local` | System resolver                  | `local`, `local://local`                                                   |
+| `udp`   | UDP DNS, default port `53`       | `udp://8.8.8.8`, `udp://8.8.8.8:8053`, `udp://[2606:4700:4700::1111]:8053` |
+| `dot`   | DNS over TLS, default port `853` | `dot://1.1.1.1`, `dot://dns.example.com:8853`                              |
+| `doh`   | DNS over HTTPS                   | `doh://https://dns.google/dns-query`                                       |
 
-Query multiple DNS servers and get formatted results, perfect for command line use.
+If the prefix is omitted, the server is treated as UDP.
 
-#### GET Method
+## Common Endpoints
+
+### `POST /api/test`
+
+Single-server query used by the web UI.
 
 ```bash
-# Query with default servers
+curl -X POST "http://localhost:8000/api/test" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "udp",
+    "server": "8.8.8.8:8053",
+    "domain": "google.com",
+    "record_type": "A"
+  }'
+```
+
+### `GET /api/query`
+
+Useful for shell scripts and side-by-side checks.
+
+```bash
 curl "http://localhost:8000/api/query?domain=google.com"
-
-# Query specific servers
 curl "http://localhost:8000/api/query?domain=google.com&server=udp://8.8.8.8&server=doh://https://dns.google/dns-query"
-
-# Query with record type
-curl "http://localhost:8000/api/query?domain=google.com&type=AAAA"
-
-# Query with proxy for DoH
+curl "http://localhost:8000/api/query?domain=google.com&server=udp://8.8.8.8:8053&type=AAAA"
 curl "http://localhost:8000/api/query?domain=google.com&server=doh://https://dns.google/dns-query&proxy=http://127.0.0.1:7890"
-
-# Simple text output (great for CLI)
 curl "http://localhost:8000/api/query?domain=google.com&format=simple"
-
-# Formatted text output
 curl "http://localhost:8000/api/query?domain=google.com&format=text"
 ```
 
-#### POST Method
+POST works the same way if you prefer sending JSON:
 
 ```bash
 curl -X POST "http://localhost:8000/api/query" \
-     -H "Content-Type: application/json" \
-     -d '{
-       "domain": "google.com",
-       "servers": ["udp://8.8.8.8", "doh://https://dns.google/dns-query"],
-       "record_type": "A",
-       "proxy": null
-     }'
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "google.com",
+    "servers": [
+      "udp://8.8.8.8:8053",
+      "doh://https://dns.google/dns-query"
+    ],
+    "record_type": "A",
+    "proxy": null
+  }'
 ```
 
-#### Parameters
+Supported query parameters:
 
-| Parameter  | Description                                                                                 |
-| ---------- | ------------------------------------------------------------------------------------------- |
-| `domain` | Domain name to query (required)                                                             |
-| `server` | DNS server(s) in format `type://server` (can specify multiple)                            |
-| `type`   | Record type:`A`, `AAAA`, `CNAME`, `MX`, `TXT`, `NS`, `SOA`, `BOTH`, `ALL` |
-| `proxy`  | Proxy for DoH requests                                                                      |
-| `format` | Output format:`json` (default), `text`, `simple`                                      |
+| Parameter | Meaning                                                                    |
+| --------- | -------------------------------------------------------------------------- |
+| `domain`  | Domain name to resolve                                                     |
+| `server`  | One or more upstream servers in `type://server` format                     |
+| `type`    | Record type: `A`, `AAAA`, `CNAME`, `MX`, `TXT`, `NS`, `SOA`, `BOTH`, `ALL` |
+| `proxy`   | Proxy URL for DoH requests                                                 |
+| `format`  | Output format: `json`, `simple`, `text`                                    |
 
-#### Output Formats
+### `GET /dns-query` and `POST /dns-query`
 
-**JSON (default)**
-
-```json
-{
-  "domain": "google.com",
-  "record_type": "A",
-  "results": [
-    {
-      "server": "udp://8.8.8.8",
-      "type": "udp",
-      "status": "success",
-      "latency_ms": 45.23,
-      "answers": ["[A] 142.250.190.78"]
-    }
-  ]
-}
-```
-
-**Simple (for CLI)**
-
-```
-DNS Query Results for: google.com
-Record Type: A
-==================================================
-
-✓ udp://8.8.8.8 (udp)
-  Latency: 45.23 ms
-  → [A] 142.250.190.78
-
-==================================================
-```
-
-### 3. List Default Servers (`/api/servers`)
+EZDNSTester can also behave like a DoH-compatible upstream. In practice you will usually place it behind a reverse proxy that terminates TLS, then point clients at `/dns-query`.
 
 ```bash
-curl "http://localhost:8000/api/servers"
+curl "http://localhost:8000/dns-query?dns=AAABAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE"
+curl "http://localhost:8000/dns-query?dns=...&upstream=udp://8.8.8.8:8053"
 ```
-
-### 4. API Help (`/api/help`)
 
 ```bash
-curl "http://localhost:8000/api/help"
+curl -X POST "http://localhost:8000/dns-query" \
+  -H "Content-Type: application/dns-message" \
+  --data-binary @query.bin
 ```
 
-## Server String Format
+Optional query parameters:
 
-When specifying DNS servers, use the format `type://server`:
+| Parameter  | Meaning                                              |
+| ---------- | ---------------------------------------------------- |
+| `dns`      | Base64url-encoded DNS message for `GET` requests     |
+| `upstream` | Upstream resolver, including custom UDP or DoT ports |
+| `proxy`    | Proxy URL for DoH upstream requests                  |
 
-| Type    | Description             | Example                                |
-| ------- | ----------------------- | -------------------------------------- |
-| `udp` | UDP DNS (port 53)       | `udp://8.8.8.8`                      |
-| `dot` | DNS over TLS (port 853) | `dot://1.1.1.1`                      |
-| `doh` | DNS over HTTPS          | `doh://https://dns.google/dns-query` |
+### `GET /api/servers`
 
-If no type prefix is provided, `udp` is assumed.
+Returns the built-in server presets used by the UI and default CLI queries.
 
-## Using as DoH Server
+### `GET /api/help`
 
-To use EZDNSTester as a DoH server for clients:
+Returns a compact machine-readable summary of the main endpoints and examples.
 
-1. Deploy behind a reverse proxy (nginx, Caddy) that provides TLS
-2. Configure the reverse proxy to forward `/dns-query` requests
-3. Use the URL as DoH upstream in your DNS client
+## Reverse Proxy Note
 
-Example nginx configuration:
+If you want to use `/dns-query` from standard DoH clients, put the app behind a reverse proxy that serves HTTPS.
 
 ```nginx
 location /dns-query {
@@ -205,13 +142,13 @@ location /dns-query {
 }
 ```
 
-## Project Structure
+## Project Layout
 
-- `app.py`: FastAPI backend application with DoH server and CLI API.
-- `dns_tester.py`: Core DNS testing logic.
-- `templates/index.html`: Frontend Web UI.
-- `Dockerfile` & `docker-compose.yml`: Docker configuration.
+- `app.py`: FastAPI entrypoint and API routes
+- `dns_tester.py`: DNS lookup helpers for UDP, DoT, DoH, and the local resolver
+- `templates/index.html`: Browser UI
+- `Dockerfile` and `docker-compose.yml`: Container setup
 
 ## License
 
-This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for the full text.

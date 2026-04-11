@@ -1,200 +1,138 @@
 # EZDNSTester
 
-
 [English](../README.md) | [简体中文](README_zh-CN.md)
 
-一款基于 Web 的 DNS 解析测试工具，支持多种协议（UDP 53、DoH、DoT）和服务器测试，并提供完整的 DoH 服务器模式和命令行查询 API。
+EZDNSTester 是一个基于 FastAPI 的 DNS 对比工具，用来查看不同解析器对同一条查询会返回什么结果。它支持本地系统解析、传统 UDP DNS、DNS over TLS、DNS over HTTPS，同时提供浏览器界面和适合脚本调用的 API。
 
-## 功能特性
+## 能做什么
 
-- **多协议支持**：支持 UDP、DNS over HTTPS (DoH) 和 DNS over TLS (DoT) 协议测试
-- **多服务器测试**：同时对多个 DNS 服务器进行并发测试
-- **代理支持**：DoH 请求支持 HTTP/HTTPS 代理
-- **Web 界面**：基于 Vue.js 和 Tailwind CSS 构建的简洁响应式界面
-- **DoH 服务器模式**：可作为符合 RFC 8484 标准的 DoH 服务器，支持配置上游服务器
-- **命令行查询 API**：通过 API 查询多个 DNS 服务器，支持格式化输出，便于命令行使用
-- **Docker 部署**：支持 Docker 和 Docker Compose 快速部署
+- 一次对比多个 DNS 服务器
+- 通过 HTTP 或 HTTPS 代理测试 DoH
+- 暴露一个兼容 DoH 的转发端点
+- 返回 JSON、简洁文本或格式化文本结果
+- 可本地运行，也可直接用 Docker
 
-## 环境要求
+## 快速开始
 
-- Python 3.9+
-- Docker（可选）
-
-## 安装与使用
-
-### 本地开发
-
-1. **克隆仓库**
-2. **安装依赖**（使用 `uv` 或 `pip`）：
-   ```bash
-   uv venv
-   uv pip install -r requirements.txt
-   ```
-3. **运行应用**：
-   ```bash
-   uv run uvicorn app:app --host 0.0.0.0 --port 8000
-   ```
-4. 在浏览器中打开 [http://localhost:8000](http://localhost:8000)
-
-### Docker 部署
-
-1. **使用 Docker Compose 构建并运行**：
-   ```bash
-   docker-compose up --build
-   ```
-2. 在浏览器中打开 [http://localhost:8000](http://localhost:8000)
-
-## API 接口文档
-
-### 1. DoH 服务器模式 (`/dns-query`)
-
-EZDNSTester 可以作为符合 RFC 8484 标准的 DoH (DNS over HTTPS) 服务器。您可以将其作为客户端的上游 DoH 服务器使用（需要反向代理提供 TLS 支持）。
-
-#### GET 方法
+### 本地运行
 
 ```bash
-# 基本 DoH 查询（Base64url 编码的 DNS 消息）
-curl "http://localhost:8000/dns-query?dns=AAABAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE"
-
-# 使用自定义上游服务器
-curl "http://localhost:8000/dns-query?dns=...&upstream=udp://8.8.8.8"
-
-# 使用 DoH 上游和代理
-curl "http://localhost:8000/dns-query?dns=...&upstream=doh://https://dns.google/dns-query&proxy=http://127.0.0.1:7890"
+uv venv
+uv pip install -r requirements.txt
+uv run uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-#### POST 方法
+浏览器打开 `http://localhost:8000`。
+
+### Docker
 
 ```bash
-curl -X POST "http://localhost:8000/dns-query" \
-     -H "Content-Type: application/dns-message" \
-     --data-binary @query.bin
+docker-compose up --build
 ```
 
-#### 参数说明
+## 服务器写法
 
-| 参数         | 说明                                       |
-| ------------ | ------------------------------------------ |
-| `dns`      | （仅 GET）Base64url 编码的 DNS 查询        |
-| `upstream` | 上游 DNS 服务器（格式：`type://server`） |
-| `proxy`    | DoH 上游请求的代理服务器                   |
+当接口需要你指定 DNS 服务器时，使用 `type://server`。
 
-### 2. 命令行查询 API (`/api/query`)
+| 类型      | 含义                      | 示例                                                                       |
+| ------- | ----------------------- | ------------------------------------------------------------------------ |
+| `local` | 系统默认解析器                 | `local`、`local://local`                                                  |
+| `udp`   | UDP DNS，默认端口 `53`       | `udp://8.8.8.8`、`udp://8.8.8.8:8053`、`udp://[2606:4700:4700::1111]:8053` |
+| `dot`   | DNS over TLS，默认端口 `853` | `dot://1.1.1.1`、`dot://dns.example.com:8853`                             |
+| `doh`   | DNS over HTTPS          | `doh://https://dns.google/dns-query`                                     |
 
-查询多个 DNS 服务器并获取格式化结果，非常适合命令行使用。
+如果不写前缀，默认按 UDP 处理。
 
-#### GET 方法
+## 常用接口
+
+### `POST /api/test`
+
+这是 Web 界面内部使用的单服务器测试接口。
 
 ```bash
-# 使用默认服务器查询
+curl -X POST "http://localhost:8000/api/test" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "udp",
+    "server": "8.8.8.8:8053",
+    "domain": "google.com",
+    "record_type": "A"
+  }'
+```
+
+### `GET /api/query`
+
+适合命令行、脚本或批量对比场景。
+
+```bash
 curl "http://localhost:8000/api/query?domain=google.com"
-
-# 查询指定服务器
 curl "http://localhost:8000/api/query?domain=google.com&server=udp://8.8.8.8&server=doh://https://dns.google/dns-query"
-
-# 查询指定记录类型
-curl "http://localhost:8000/api/query?domain=google.com&type=AAAA"
-
-# DoH 查询使用代理
+curl "http://localhost:8000/api/query?domain=google.com&server=udp://8.8.8.8:8053&type=AAAA"
 curl "http://localhost:8000/api/query?domain=google.com&server=doh://https://dns.google/dns-query&proxy=http://127.0.0.1:7890"
-
-# 简单文本输出（适合命令行）
 curl "http://localhost:8000/api/query?domain=google.com&format=simple"
-
-# 格式化文本输出
 curl "http://localhost:8000/api/query?domain=google.com&format=text"
 ```
 
-#### POST 方法
+如果你更习惯发 JSON，也可以用 `POST`：
 
 ```bash
 curl -X POST "http://localhost:8000/api/query" \
-     -H "Content-Type: application/json" \
-     -d '{
-       "domain": "google.com",
-       "servers": ["udp://8.8.8.8", "doh://https://dns.google/dns-query"],
-       "record_type": "A",
-       "proxy": null
-     }'
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "google.com",
+    "servers": [
+      "udp://8.8.8.8:8053",
+      "doh://https://dns.google/dns-query"
+    ],
+    "record_type": "A",
+    "proxy": null
+  }'
 ```
 
-#### 参数说明
+常用参数：
 
-| 参数       | 说明                                                                                      |
-| ---------- | ----------------------------------------------------------------------------------------- |
-| `domain` | 要查询的域名（必填）                                                                      |
-| `server` | DNS 服务器，格式为 `type://server`（可指定多个）                                        |
+| 参数       | 说明                                                         |
+| -------- | ---------------------------------------------------------- |
+| `domain` | 要解析的域名                                                     |
+| `server` | 一个或多个上游服务器，格式为 `type://server`                             |
 | `type`   | 记录类型：`A`、`AAAA`、`CNAME`、`MX`、`TXT`、`NS`、`SOA`、`BOTH`、`ALL` |
-| `proxy`  | DoH 请求的代理服务器                                                                      |
-| `format` | 输出格式：`json`（默认）、`text`、`simple`                                          |
+| `proxy`  | DoH 请求使用的代理地址                                              |
+| `format` | 输出格式：`json`、`simple`、`text`                                |
 
-#### 输出格式
+### `GET /dns-query` 和 `POST /dns-query`
 
-**JSON（默认）**
-
-```json
-{
-  "domain": "google.com",
-  "record_type": "A",
-  "results": [
-    {
-      "server": "udp://8.8.8.8",
-      "type": "udp",
-      "status": "success",
-      "latency_ms": 45.23,
-      "answers": ["[A] 142.250.190.78"]
-    }
-  ]
-}
-```
-
-**Simple（命令行友好）**
-
-```
-DNS Query Results for: google.com
-Record Type: A
-==================================================
-
-✓ udp://8.8.8.8 (udp)
-  Latency: 45.23 ms
-  → [A] 142.250.190.78
-
-==================================================
-```
-
-### 3. 获取默认服务器列表 (`/api/servers`)
+EZDNSTester 也可以作为兼容 DoH 的上游使用。实际部署时，通常会放在提供 HTTPS 的反向代理后面，然后把 `/dns-query` 暴露给客户端。
 
 ```bash
-curl "http://localhost:8000/api/servers"
+curl "http://localhost:8000/dns-query?dns=AAABAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE"
+curl "http://localhost:8000/dns-query?dns=...&upstream=udp://8.8.8.8:8053"
 ```
-
-### 4. API 帮助 (`/api/help`)
 
 ```bash
-curl "http://localhost:8000/api/help"
+curl -X POST "http://localhost:8000/dns-query" \
+  -H "Content-Type: application/dns-message" \
+  --data-binary @query.bin
 ```
 
-## 服务器地址格式
+可选参数：
 
-指定 DNS 服务器时，请使用 `type://server` 格式：
+| 参数         | 说明                              |
+| ---------- | ------------------------------- |
+| `dns`      | `GET` 请求使用的 Base64url 编码 DNS 消息 |
+| `upstream` | 指定上游解析器，支持自定义 UDP 或 DoT 端口      |
+| `proxy`    | DoH 上游请求使用的代理地址                 |
 
-| 类型    | 说明                     | 示例                                   |
-| ------- | ------------------------ | -------------------------------------- |
-| `udp` | UDP DNS（端口 53）       | `udp://8.8.8.8`                      |
-| `dot` | DNS over TLS（端口 853） | `dot://1.1.1.1`                      |
-| `doh` | DNS over HTTPS           | `doh://https://dns.google/dns-query` |
+### `GET /api/servers`
 
-如果未指定类型前缀，默认使用 `udp`。
+返回内置的服务器列表，Web 界面和默认的 CLI 查询都会用到它。
 
-## 作为 DoH 服务器使用
+### `GET /api/help`
 
-将 EZDNSTester 作为 DoH 服务器供客户端使用：
+返回一份简短的接口说明和示例，适合程序自己读取。
 
-1. 部署在提供 TLS 的反向代理（nginx、Caddy）后面
-2. 配置反向代理转发 `/dns-query` 请求
-3. 在 DNS 客户端中使用该 URL 作为 DoH 上游
+## 反向代理说明
 
-nginx 配置示例：
+如果你准备把 `/dns-query` 提供给标准 DoH 客户端使用，记得把应用放在提供 HTTPS 的反向代理后面。
 
 ```nginx
 location /dns-query {
@@ -206,11 +144,11 @@ location /dns-query {
 
 ## 项目结构
 
-- `app.py`：FastAPI 后端应用，包含 DoH 服务器和命令行 API
-- `dns_tester.py`：核心 DNS 测试逻辑
-- `templates/index.html`：前端 Web 界面
-- `Dockerfile` & `docker-compose.yml`：Docker 配置文件
+- `app.py`：FastAPI 入口和 API 路由
+- `dns_tester.py`：UDP、DoT、DoH 和本地解析的测试逻辑
+- `templates/index.html`：浏览器界面
+- `Dockerfile` 与 `docker-compose.yml`：容器相关配置
 
-## 开源协议
+## 许可证
 
-本项目根据GNU通用公共许可证v3.0授权，详情请参阅[LICENSE](../LICENSE)文件。
+本项目采用 GNU General Public License v3.0。完整内容见 [LICENSE](../LICENSE)。

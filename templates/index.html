@@ -23,7 +23,7 @@
                     <img src="/img/ezdnstester.png" alt="EZDNSTester Logo" class="h-12 w-auto">
                     <div>
                         <h1 class="text-2xl font-bold text-white">DNS Resolution Tester</h1>
-                        <p class="text-blue-100 mt-1">Test DNS servers via UDP, DoT, and DoH</p>
+                        <p class="text-blue-100 mt-1">Compare DNS responses over UDP, DoT, and DoH</p>
                     </div>
                 </div>
                 <a href="https://github.com/somnifex/EZDNSTester" target="_blank" rel="noopener noreferrer"
@@ -38,10 +38,9 @@
         </div>
 
         <div class="p-6 space-y-6">
-            <!-- Configuration -->
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">Target Domain</label>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Domain</label>
                     <input v-model="domain" type="text"
                         class="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none"
                         placeholder="e.g. google.com">
@@ -69,13 +68,12 @@
                 </div>
             </div>
 
-            <!-- Server Selection -->
             <div>
                 <div class="flex justify-between items-center mb-2">
                     <label class="block text-sm font-medium text-gray-700">DNS Servers</label>
                     <div class="space-x-2 text-sm">
                         <button @click="selectAll" class="text-blue-600 hover:underline">Select All</button>
-                        <button @click="deselectAll" class="text-blue-600 hover:underline">Deselect All</button>
+                        <button @click="deselectAll" class="text-blue-600 hover:underline">Clear</button>
                     </div>
                 </div>
 
@@ -92,42 +90,47 @@
                     </div>
                 </div>
 
-                <!-- Custom Server Input -->
                 <div class="mt-4 p-4 bg-gray-50 rounded border">
                     <div class="flex items-center mb-2">
                         <input type="checkbox" id="use-custom" v-model="useCustomServer"
                             class="rounded text-blue-600 focus:ring-blue-500 mr-2">
-                        <label for="use-custom" class="text-sm font-medium text-gray-700 select-none">Test Custom
+                        <label for="use-custom" class="text-sm font-medium text-gray-700 select-none">Use Custom
                             Server</label>
                     </div>
                     <div v-if="useCustomServer" class="grid grid-cols-1 md:grid-cols-3 gap-4 pl-6">
                         <div class="md:col-span-2">
-                            <input v-model="customServer.server" type="text" class="w-full p-2 border rounded text-sm"
-                                placeholder="8.8.8.8 or https://...">
+                            <input v-model.trim="customServer.server" type="text"
+                                class="w-full p-2 border rounded text-sm"
+                                :placeholder="customServer.type === 'doh'
+                                    ? 'https://dns.example.com/dns-query'
+                                    : '8.8.8.8, 8.8.8.8:8053, or [2606:4700:4700::1111]:8053'">
                         </div>
                         <div>
                             <select v-model="customServer.type" class="w-full p-2 border rounded text-sm">
-                                <option value="udp">UDP 53</option>
+                                <option value="udp">UDP (default 53)</option>
                                 <option value="doh">DoH (HTTPS)</option>
-                                <option value="dot">DoT (TLS)</option>
+                                <option value="dot">DoT (default 853)</option>
                             </select>
                         </div>
+                        <p class="md:col-span-3 text-xs text-gray-500">
+                            UDP and DoT support custom ports, for example
+                            <code>8.8.8.8:8053</code> or <code>[2606:4700:4700::1111]:8053</code>.
+                            DoH should use a full HTTPS URL.
+                        </p>
                     </div>
                 </div>
             </div>
 
-            <!-- Action -->
             <div class="flex justify-end">
                 <button @click="runTest" :disabled="loading"
                     class="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center">
                     <span v-if="loading" class="animate-spin mr-2">⟳</span>
-                    {{ loading ? 'Testing...' : 'Run Test' }}
+                    {{ loading ? 'Testing...' : 'Run Tests' }}
                 </button>
             </div>
 
-            <!-- Results -->
             <div v-if="results.length > 0" class="mt-8 border-t pt-6">
-                <h3 class="text-lg font-semibold mb-4">Test Results</h3>
+                <h3 class="text-lg font-semibold mb-4">Results</h3>
                 <div class="overflow-x-auto">
                     <table class="min-w-full bg-white border border-gray-200">
                         <thead>
@@ -137,7 +140,7 @@
                                 <th class="px-4 py-3 border-b">Type</th>
                                 <th class="px-4 py-3 border-b">Status</th>
                                 <th class="px-4 py-3 border-b">Latency</th>
-                                <th class="px-4 py-3 border-b">Result / Error</th>
+                                <th class="px-4 py-3 border-b">Answer / Error</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-gray-200">
@@ -176,18 +179,17 @@
             </div>
         </div>
 
-        <!-- Footer -->
         <div class="bg-gray-50 border-t px-6 py-4">
             <div class="flex flex-col sm:flex-row justify-between items-center text-sm text-gray-500">
-                <p>&copy; 2025 EZDNSTester. All rights reserved.</p>
+                <p>&copy; 2025 EZDNSTester</p>
                 <p class="mt-2 sm:mt-0">
                     <a href="https://github.com/somnifex/EZDNSTester" target="_blank" rel="noopener noreferrer"
                         class="text-blue-600 hover:underline">GitHub</a>
                     <span class="mx-2">|</span>
                     <a href="https://github.com/somnifex/EZDNSTester/blob/main/LICENSE" target="_blank"
-                        rel="noopener noreferrer" class="text-blue-600 hover:underline">GPLv3 License</a>
+                        rel="noopener noreferrer" class="text-blue-600 hover:underline">GPLv3</a>
                     <span class="mx-2">|</span>
-                    <span>Made with ❤️ by <a href="https://github.com/somnifex" target="_blank"
+                    <span>Maintained by <a href="https://github.com/somnifex" target="_blank"
                             rel="noopener noreferrer" class="text-blue-600 hover:underline">somnifex</a></span>
                 </p>
             </div>
@@ -227,6 +229,71 @@
                     type: 'udp'
                 })
 
+                const makePendingResult = (serverItem) => ({
+                    ...serverItem,
+                    loading: true,
+                    status: 'pending'
+                })
+
+                const collectServersToTest = () => {
+                    const servers = selectedServerIndices.value.map((index) =>
+                        makePendingResult(defaultServers[index])
+                    )
+
+                    if (useCustomServer.value && customServer.server.trim()) {
+                        servers.push(
+                            makePendingResult({
+                                name: 'Custom Server',
+                                server: customServer.server.trim(),
+                                type: customServer.type
+                            })
+                        )
+                    }
+
+                    return servers
+                }
+
+                const updateResult = (index, payload) => {
+                    Object.assign(results.value[index], {
+                        loading: false,
+                        status: payload.status,
+                        latency_ms: payload.latency_ms,
+                        answers: payload.answers,
+                        error: payload.error
+                    })
+                }
+
+                const markResultFailed = (index, message) => {
+                    Object.assign(results.value[index], {
+                        loading: false,
+                        status: 'error',
+                        error: message
+                    })
+                }
+
+                const runServerTest = async (serverItem, index) => {
+                    const response = await fetch('/api/test', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            type: serverItem.type,
+                            server: serverItem.server,
+                            domain: domain.value,
+                            proxy: proxy.value || null,
+                            record_type: recordType.value
+                        })
+                    })
+
+                    const data = await response.json()
+                    if (!response.ok) {
+                        throw new Error(data.detail || 'Request failed')
+                    }
+
+                    updateResult(index, data)
+                }
+
                 const selectAll = () => {
                     selectedServerIndices.value = defaultServers.map((_, i) => i)
                 }
@@ -239,27 +306,7 @@
                     loading.value = true
                     results.value = []
 
-                    const serversToTest = []
-
-                    // Add selected default servers
-                    selectedServerIndices.value.forEach(index => {
-                        serversToTest.push({
-                            ...defaultServers[index],
-                            loading: true,
-                            status: 'pending'
-                        })
-                    })
-
-                    // Add custom server if enabled
-                    if (useCustomServer.value && customServer.server) {
-                        serversToTest.push({
-                            name: 'Custom Server',
-                            server: customServer.server,
-                            type: customServer.type,
-                            loading: true,
-                            status: 'pending'
-                        })
-                    }
+                    const serversToTest = collectServersToTest()
 
                     if (serversToTest.length === 0) {
                         alert("Please select at least one server.")
@@ -269,35 +316,11 @@
 
                     results.value = serversToTest
 
-                    // Run tests concurrently
                     const promises = serversToTest.map(async (serverItem, index) => {
                         try {
-                            const response = await fetch('/api/test', {
-                                method: 'POST',
-                                headers: {
-                                    'Content-Type': 'application/json'
-                                },
-                                body: JSON.stringify({
-                                    type: serverItem.type,
-                                    server: serverItem.server,
-                                    domain: domain.value,
-                                    proxy: proxy.value || null,
-                                    record_type: recordType.value
-                                })
-                            })
-                            const data = await response.json()
-
-                            // Update result in place
-                            results.value[index].loading = false
-                            results.value[index].status = data.status
-                            results.value[index].latency_ms = data.latency_ms
-                            results.value[index].answers = data.answers
-                            results.value[index].error = data.error
-
+                            await runServerTest(serverItem, index)
                         } catch (e) {
-                            results.value[index].loading = false
-                            results.value[index].status = 'error'
-                            results.value[index].error = e.message
+                            markResultFailed(index, e instanceof Error ? e.message : 'Request failed')
                         }
                     })
 
