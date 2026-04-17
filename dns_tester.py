@@ -93,36 +93,56 @@ def _resolve_record_types(record_type: Optional[str]) -> list[int]:
     return RECORD_TYPES.get(normalized, RECORD_TYPES[DEFAULT_RECORD_TYPE])
 
 
-def _collect_message_answers(
+def _collect_message_records(
     answer_sections, requested_type: int, include_all: bool
-) -> list[str]:
-    answers = []
+) -> list[dict]:
+    records = []
     for rrset in answer_sections:
         if rrset.rdtype != requested_type and not include_all:
             continue
 
         actual_type = dns.rdatatype.to_text(rrset.rdtype)
-        answers.extend(f"[{actual_type}] {rr}" for rr in rrset)
-    return answers
+        ttl = max(0, int(getattr(rrset, "ttl", 0) or 0))
+        records.extend(
+            {"type": actual_type, "value": str(rr), "ttl": ttl} for rr in rrset
+        )
+    return records
 
 
-def _collect_resolver_answers(
+def _collect_resolver_records(
     response, requested_type: int, include_all: bool
-) -> list[str]:
+) -> list[dict]:
     if response.rdtype != requested_type and not include_all:
         return []
 
     actual_type = dns.rdatatype.to_text(response.rdtype)
-    return [f"[{actual_type}] {rr}" for rr in response]
+    ttl = max(0, int(getattr(getattr(response, "rrset", None), "ttl", 0) or 0))
+    return [{"type": actual_type, "value": str(rr), "ttl": ttl} for rr in response]
 
 
-def _success_result(server: str, total_duration: float, answers: list[str]) -> dict:
-    return {
+def _records_to_answers(records: list[dict]) -> list[str]:
+    return [f"[{record['type']}] {record['value']}" for record in records]
+
+
+def _derive_min_ttl(records: list[dict]) -> Optional[int]:
+    ttl_values = [max(0, int(record.get("ttl", 0) or 0)) for record in records]
+    return min(ttl_values) if ttl_values else None
+
+
+def _success_result(server: str, total_duration: float, records: list[dict]) -> dict:
+    result = {
         "status": "success",
         "latency_ms": round(total_duration, 2),
-        "answers": answers,
+        "answers": _records_to_answers(records),
         "server": server,
+        "_records": records,
     }
+
+    min_ttl = _derive_min_ttl(records)
+    if min_ttl is not None:
+        result["_min_ttl"] = min_ttl
+
+    return result
 
 
 def _error_result(server: str, exc: Exception) -> dict:
@@ -134,7 +154,7 @@ def test_udp(
 ):
     """Resolve DNS records over UDP."""
     try:
-        answers = []
+        records = []
         total_duration = 0.0
         normalized_record_type = _normalize_record_type(record_type)
         include_all = normalized_record_type == "ALL"
@@ -150,9 +170,9 @@ def test_udp(
                 timeout=timeout,
             )
             total_duration += (time.perf_counter() - start_time) * 1000
-            answers.extend(_collect_message_answers(response.answer, rdtype, include_all))
+            records.extend(_collect_message_records(response.answer, rdtype, include_all))
 
-        return _success_result(server_ip, total_duration, answers)
+        return _success_result(server_ip, total_duration, records)
     except Exception as exc:
         return _error_result(server_ip, exc)
 
@@ -162,7 +182,7 @@ def test_dot(
 ):
     """Resolve DNS records over DNS over TLS."""
     try:
-        answers = []
+        records = []
         total_duration = 0.0
         normalized_record_type = _normalize_record_type(record_type)
         include_all = normalized_record_type == "ALL"
@@ -183,9 +203,9 @@ def test_dot(
                 ssl_context=context,
             )
             total_duration += (time.perf_counter() - start_time) * 1000
-            answers.extend(_collect_message_answers(response.answer, rdtype, include_all))
+            records.extend(_collect_message_records(response.answer, rdtype, include_all))
 
-        return _success_result(server_ip, total_duration, answers)
+        return _success_result(server_ip, total_duration, records)
     except Exception as exc:
         return _error_result(server_ip, exc)
 
@@ -199,7 +219,7 @@ async def test_doh(
 ):
     """Resolve DNS records over DNS over HTTPS."""
     try:
-        answers = []
+        records = []
         total_duration = 0.0
         normalized_record_type = _normalize_record_type(record_type)
         include_all = normalized_record_type == "ALL"
@@ -221,11 +241,11 @@ async def test_doh(
                 total_duration += (time.perf_counter() - start_time) * 1000
 
                 message = dns.message.from_wire(response.content)
-                answers.extend(
-                    _collect_message_answers(message.answer, rdtype, include_all)
+                records.extend(
+                    _collect_message_records(message.answer, rdtype, include_all)
                 )
 
-        return _success_result(url, total_duration, answers)
+        return _success_result(url, total_duration, records)
     except Exception as exc:
         return _error_result(url, exc)
 
@@ -233,7 +253,7 @@ async def test_doh(
 def test_local(domain: str, record_type: str = "ALL", timeout: float = 5.0):
     """Resolve DNS records with the system resolver."""
     try:
-        answers = []
+        records = []
         total_duration = 0.0
         normalized_record_type = _normalize_record_type(record_type)
         include_all = normalized_record_type == "ALL"
@@ -247,12 +267,12 @@ def test_local(domain: str, record_type: str = "ALL", timeout: float = 5.0):
                 start_time = time.perf_counter()
                 response = resolver.resolve(domain, dns.rdatatype.to_text(rdtype))
                 total_duration += (time.perf_counter() - start_time) * 1000
-                answers.extend(_collect_resolver_answers(response, rdtype, include_all))
+                records.extend(_collect_resolver_records(response, rdtype, include_all))
             except dns.resolver.NoAnswer:
                 continue
             except dns.resolver.NXDOMAIN:
                 continue
 
-        return _success_result("local", total_duration, answers)
+        return _success_result("local", total_duration, records)
     except Exception as exc:
         return _error_result("local", exc)

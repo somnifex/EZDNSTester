@@ -1,5 +1,8 @@
 import asyncio
 import base64
+import copy
+import os
+import time
 from typing import List, Optional
 
 import dns.message
@@ -8,18 +11,41 @@ import dns.rdata
 import dns.rdataclass
 import dns.rdatatype
 import dns_tester
+from arc_cache import AdaptiveReplacementTTLCache
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 DEFAULT_RECORD_TYPE = "A"
 DEFAULT_OUTPUT_FORMAT = "json"
+DEFAULT_API_CACHE_SIZE = 512
+DEFAULT_API_CACHE_MAX_TTL = 300
+
+
+def _read_int_env(name: str, default: int, minimum: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    try:
+        return max(minimum, int(value))
+    except ValueError:
+        return default
+
+
+API_CACHE_SIZE = _read_int_env(
+    "EZDNS_API_CACHE_SIZE", DEFAULT_API_CACHE_SIZE, minimum=0
+)
+API_CACHE_MAX_TTL = _read_int_env(
+    "EZDNS_API_CACHE_MAX_TTL", DEFAULT_API_CACHE_MAX_TTL, minimum=1
+)
+API_RESULT_CACHE = AdaptiveReplacementTTLCache(API_CACHE_SIZE)
 
 app = FastAPI(
     title="EZDNSTester API",
     description="DNS testing API with DoH forwarding and CLI query endpoints.",
-    version="1.0.0",
+    version="1.1.0",
 )
 
 app.mount("/img", StaticFiles(directory="img"), name="img")
@@ -31,6 +57,8 @@ class TestRequest(BaseModel):
     domain: str
     proxy: Optional[str] = None
     record_type: Optional[str] = DEFAULT_RECORD_TYPE
+    cache: bool = False
+    cache_max_ttl: Optional[int] = Field(default=None, ge=1)
 
 
 class QueryRequest(BaseModel):
@@ -38,6 +66,8 @@ class QueryRequest(BaseModel):
     servers: Optional[List[str]] = None
     record_type: Optional[str] = DEFAULT_RECORD_TYPE
     proxy: Optional[str] = None
+    cache: bool = False
+    cache_max_ttl: Optional[int] = Field(default=None, ge=1)
 
 
 DEFAULT_SERVERS = [
@@ -84,7 +114,124 @@ def parse_server_string(server_str: str) -> dict:
     return {"type": "udp", "server": server_str}
 
 
-async def _dispatch_test(
+def _normalize_domain(domain: str) -> str:
+    return domain.rstrip(".").lower()
+
+
+def _cache_enabled() -> bool:
+    return API_RESULT_CACHE.capacity > 0
+
+
+def _effective_cache_ttl(requested_cache_max_ttl: Optional[int]) -> Optional[int]:
+    if not _cache_enabled():
+        return None
+
+    if requested_cache_max_ttl is None:
+        return API_CACHE_MAX_TTL
+
+    return max(1, min(requested_cache_max_ttl, API_CACHE_MAX_TTL))
+
+
+def _build_cache_key(
+    server_type: str,
+    server: str,
+    domain: str,
+    record_type: str,
+    proxy: Optional[str],
+):
+    return (
+        server_type.strip().lower(),
+        server.strip(),
+        _normalize_domain(domain),
+        record_type.upper(),
+        (proxy or "").strip(),
+    )
+
+
+def _result_min_ttl(result: dict) -> Optional[int]:
+    min_ttl = result.get("_min_ttl")
+    if isinstance(min_ttl, int):
+        return min_ttl
+
+    records = result.get("_records") or []
+    ttl_values = [max(0, int(record.get("ttl", 0) or 0)) for record in records]
+    return min(ttl_values) if ttl_values else None
+
+
+def _cache_lifetime(result: dict) -> Optional[int]:
+    min_ttl = _result_min_ttl(result)
+    if min_ttl is None:
+        return None
+
+    return min(min_ttl, API_CACHE_MAX_TTL)
+
+
+def _request_cache_window(
+    result: dict,
+    use_cache: bool,
+    cache_max_ttl: Optional[int],
+) -> Optional[int]:
+    if not use_cache:
+        return None
+
+    request_cap = _effective_cache_ttl(cache_max_ttl)
+    min_ttl = _result_min_ttl(result)
+    if request_cap is None or min_ttl is None:
+        return None
+
+    return min(min_ttl, request_cap)
+
+
+def _cache_age_seconds(result: dict) -> int:
+    cached_at = result.get("_cached_at")
+    if not cached_at:
+        return 0
+
+    return max(0, int(time.time() - float(cached_at)))
+
+
+def _can_use_cached_result(result: dict, cache_max_ttl: Optional[int]) -> bool:
+    request_window = _request_cache_window(result, True, cache_max_ttl)
+    if request_window is None:
+        return False
+
+    return _cache_age_seconds(result) < request_window
+
+
+def _result_is_cacheable(result: dict) -> bool:
+    min_ttl = _result_min_ttl(result)
+    return (
+        result.get("status") == "success"
+        and bool(result.get("_records"))
+        and min_ttl is not None
+        and min_ttl > 0
+    )
+
+
+def _annotate_result(
+    result: dict,
+    *,
+    cached: bool,
+    use_cache: bool,
+    cache_max_ttl: Optional[int],
+) -> dict:
+    result["cached"] = cached
+
+    request_window = _request_cache_window(result, use_cache, cache_max_ttl)
+    if request_window is not None:
+        age_seconds = _cache_age_seconds(result) if cached else 0
+        result["cache_ttl"] = request_window
+        result["cache_max_ttl"] = _effective_cache_ttl(cache_max_ttl)
+        result["cache_expires_in"] = max(0, request_window - age_seconds)
+
+    return result
+
+
+def _public_result(result: dict) -> dict:
+    return {key: value for key, value in result.items() if not key.startswith("_")}
+
+
+async def _dispatch_test_uncached(
     server_type: str,
     server: str,
     domain: str,
@@ -102,8 +249,53 @@ async def _dispatch_test(
     raise ValueError(f"Invalid test type: {server_type}")
 
 
+async def _dispatch_test(
+    server_type: str,
+    server: str,
+    domain: str,
+    record_type: str,
+    proxy: Optional[str] = None,
+    use_cache: bool = False,
+    cache_max_ttl: Optional[int] = None,
+) -> dict:
+    cache_allowed = bool(use_cache) and _cache_enabled()
+    cache_key = _build_cache_key(server_type, server, domain, record_type, proxy)
+
+    if cache_allowed:
+        cached_result = API_RESULT_CACHE.get(cache_key)
+        if cached_result is not None and _can_use_cached_result(
+            cached_result, cache_max_ttl
+        ):
+            return _annotate_result(
+                copy.deepcopy(cached_result),
+                cached=True,
+                use_cache=True,
+                cache_max_ttl=cache_max_ttl,
+            )
+
+    result = await _dispatch_test_uncached(server_type, server, domain, record_type, proxy)
+
+    if cache_allowed and _result_is_cacheable(result):
+        cache_entry = copy.deepcopy(result)
+        cache_entry["_cached_at"] = time.time()
+        cache_lifetime = _cache_lifetime(cache_entry)
+        if cache_lifetime is not None:
+            API_RESULT_CACHE.put(cache_key, cache_entry, cache_lifetime)
+
+    return _annotate_result(
+        result,
+        cached=False,
+        use_cache=cache_allowed,
+        cache_max_ttl=cache_max_ttl,
+    )
+
+
 async def _query_default_servers(
-    domain: str, record_type: str, proxy: Optional[str] = None
+    domain: str,
+    record_type: str,
+    proxy: Optional[str] = None,
+    use_cache: bool = False,
+    cache_max_ttl: Optional[int] = None,
 ) -> dict:
     for server_config in DEFAULT_SERVERS:
         try:
@@ -113,6 +305,8 @@ async def _query_default_servers(
                 domain,
                 record_type,
                 proxy,
+                use_cache,
+                cache_max_ttl,
             )
         except Exception:
             continue
@@ -128,18 +322,23 @@ def _decode_base64url_query(encoded_query: str) -> bytes:
     return base64.urlsafe_b64decode(f"{encoded_query}{'=' * padding}")
 
 
-def _append_answers_to_response(
+def _append_records_to_response(
     response: dns.message.Message,
     question,
-    answers: list[str],
+    records: list[dict],
+    cache_max_ttl: Optional[int] = None,
+    age_seconds: int = 0,
 ) -> None:
-    for answer in answers:
-        if not answer.startswith("["):
+    for record in records:
+        answer_type = record.get("type")
+        answer_value = record.get("value")
+        if not answer_type or not answer_value:
             continue
 
-        answer_type, separator, answer_value = answer[1:].partition("] ")
-        if not separator or not answer_value:
-            continue
+        ttl = max(0, int(record.get("ttl", 0) or 0))
+        if cache_max_ttl is not None:
+            ttl = min(ttl, cache_max_ttl)
+        ttl = max(0, ttl - age_seconds)
 
         answer_rdtype = dns.rdatatype.from_text(answer_type)
         rrset = response.find_rrset(
@@ -149,6 +348,7 @@ def _append_answers_to_response(
             answer_rdtype,
             create=True,
         )
+        rrset.ttl = ttl if rrset.ttl == 0 else min(rrset.ttl, ttl)
         rrset.add(
             dns.rdata.from_text(dns.rdataclass.IN, answer_rdtype, answer_value)
         )
@@ -227,20 +427,28 @@ async def run_test(test_req: TestRequest):
     server_type = test_req.type.strip().lower()
 
     try:
-        return await _dispatch_test(
-            server_type,
-            server,
-            test_req.domain,
-            record_type,
-            test_req.proxy,
+        return _public_result(
+            await _dispatch_test(
+                server_type,
+                server,
+                test_req.domain,
+                record_type,
+                test_req.proxy,
+                test_req.cache,
+                test_req.cache_max_ttl,
+            )
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 async def forward_dns_query(
-    wire_data: bytes, upstream: Optional[str] = None, proxy: Optional[str] = None
-) -> bytes:
+    wire_data: bytes,
+    upstream: Optional[str] = None,
+    proxy: Optional[str] = None,
+    use_cache: bool = False,
+    cache_max_ttl: Optional[int] = None,
+) -> tuple[bytes, dict]:
     try:
         query = dns.message.from_wire(wire_data)
         question = query.question[0]
@@ -255,23 +463,48 @@ async def forward_dns_query(
                 domain,
                 record_type,
                 proxy,
+                use_cache,
+                cache_max_ttl,
             )
         else:
-            result = await _query_default_servers(domain, record_type, proxy)
+            result = await _query_default_servers(
+                domain,
+                record_type,
+                proxy,
+                use_cache,
+                cache_max_ttl,
+            )
 
         response = dns.message.make_response(query)
-        if result.get("status") == "success" and result.get("answers"):
-            _append_answers_to_response(response, question, result["answers"])
+        if result.get("status") == "success" and result.get("_records"):
+            request_cache_max_ttl = _effective_cache_ttl(cache_max_ttl) if use_cache else None
+            _append_records_to_response(
+                response,
+                question,
+                result["_records"],
+                cache_max_ttl=request_cache_max_ttl,
+                age_seconds=_cache_age_seconds(result) if result.get("cached") else 0,
+            )
         else:
             response.set_rcode(dns.rcode.SERVFAIL)
 
-        return response.to_wire()
+        response_headers = {"X-Cache": "BYPASS"}
+        if use_cache and _cache_enabled():
+            response_headers["X-Cache"] = "HIT" if result.get("cached") else "MISS"
+            if result.get("cache_expires_in") is not None:
+                response_headers["X-Cache-Expires-In"] = str(
+                    result["cache_expires_in"]
+                )
+            if result.get("cache_ttl") is not None:
+                response_headers["X-Cache-TTL"] = str(result["cache_ttl"])
+
+        return response.to_wire(), response_headers
     except Exception as exc:
         try:
             query = dns.message.from_wire(wire_data)
             response = dns.message.make_response(query)
             response.set_rcode(dns.rcode.SERVFAIL)
-            return response.to_wire()
+            return response.to_wire(), {"X-Cache": "ERROR"}
         except Exception as fallback_exc:
             raise HTTPException(status_code=500, detail=str(exc)) from fallback_exc
 
@@ -281,12 +514,28 @@ async def doh_get(
     dns: str = Query(..., description="Base64url encoded DNS query"),
     upstream: Optional[str] = Query(None, description="Upstream DNS server"),
     proxy: Optional[str] = Query(None, description="Proxy for DoH upstream"),
+    cache: bool = Query(False, description="Enable the ARC result cache for this request"),
+    cache_max_ttl: Optional[int] = Query(
+        None,
+        ge=1,
+        description="Per-request upper bound for cached TTL in seconds",
+    ),
 ):
     """DoH GET endpoint (RFC 8484)."""
     try:
         wire_data = _decode_base64url_query(dns)
-        response_wire = await forward_dns_query(wire_data, upstream, proxy)
-        return Response(content=response_wire, media_type="application/dns-message")
+        response_wire, response_headers = await forward_dns_query(
+            wire_data,
+            upstream,
+            proxy,
+            cache,
+            cache_max_ttl,
+        )
+        return Response(
+            content=response_wire,
+            media_type="application/dns-message",
+            headers=response_headers,
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid DNS query: {exc}") from exc
 
@@ -296,6 +545,12 @@ async def doh_post(
     request: Request,
     upstream: Optional[str] = Query(None, description="Upstream DNS server"),
     proxy: Optional[str] = Query(None, description="Proxy for DoH upstream"),
+    cache: bool = Query(False, description="Enable the ARC result cache for this request"),
+    cache_max_ttl: Optional[int] = Query(
+        None,
+        ge=1,
+        description="Per-request upper bound for cached TTL in seconds",
+    ),
 ):
     """DoH POST endpoint (RFC 8484)."""
     content_type = request.headers.get("content-type", "")
@@ -305,8 +560,18 @@ async def doh_post(
         )
 
     wire_data = await request.body()
-    response_wire = await forward_dns_query(wire_data, upstream, proxy)
-    return Response(content=response_wire, media_type="application/dns-message")
+    response_wire, response_headers = await forward_dns_query(
+        wire_data,
+        upstream,
+        proxy,
+        cache,
+        cache_max_ttl,
+    )
+    return Response(
+        content=response_wire,
+        media_type="application/dns-message",
+        headers=response_headers,
+    )
 
 
 @app.get("/api/query")
@@ -324,9 +589,23 @@ async def cli_query_get(
         alias="format",
         description="Output format: json, text, simple",
     ),
+    cache: bool = Query(False, description="Enable the ARC result cache for this request"),
+    cache_max_ttl: Optional[int] = Query(
+        None,
+        ge=1,
+        description="Per-request upper bound for cached TTL in seconds",
+    ),
 ):
     """CLI-friendly DNS query API (GET)."""
-    return await _perform_query(domain, server, record_type, proxy, output_format)
+    return await _perform_query(
+        domain,
+        server,
+        record_type,
+        proxy,
+        output_format,
+        cache,
+        cache_max_ttl,
+    )
 
 
 @app.post("/api/query")
@@ -341,6 +620,8 @@ async def cli_query_post(
         query_req.record_type,
         query_req.proxy,
         output_format,
+        query_req.cache,
+        query_req.cache_max_ttl,
     )
 
 
@@ -350,6 +631,8 @@ async def _perform_query(
     record_type: Optional[str],
     proxy: Optional[str],
     output_format: Optional[str],
+    use_cache: bool,
+    cache_max_ttl: Optional[int],
 ):
     record_type = _normalize_record_type(record_type)
     output_format = _normalize_output_format(output_format)
@@ -366,6 +649,8 @@ async def _perform_query(
                 domain,
                 record_type,
                 proxy,
+                use_cache,
+                cache_max_ttl,
             )
             return {
                 "server": server_str,
@@ -391,7 +676,11 @@ async def _perform_query(
         return _format_simple_results(domain, record_type, results)
     if output_format == "text":
         return _format_text_results(domain, record_type, results)
-    return {"domain": domain, "record_type": record_type, "results": results}
+    return {
+        "domain": domain,
+        "record_type": record_type,
+        "results": [_public_result(result) for result in results],
+    }
 
 
 @app.get("/api/servers")
@@ -400,6 +689,25 @@ async def list_servers():
     return {
         "servers": DEFAULT_SERVERS,
         "format_hint": "Use 'type://server' when specifying servers. UDP and DoT also accept host:port, e.g. 'udp://8.8.8.8:8053', 'dot://dns.example.com:8853', or 'udp://[2606:4700:4700::1111]:8053'.",
+    }
+
+
+@app.get("/api/cache")
+async def cache_status():
+    """Show ARC cache configuration and live stats."""
+    return {
+        "enabled": _cache_enabled(),
+        "policy": "ARC",
+        "default_request_cache": False,
+        "config": {
+            "capacity": API_CACHE_SIZE,
+            "max_ttl": API_CACHE_MAX_TTL,
+            "env": {
+                "size": "EZDNS_API_CACHE_SIZE",
+                "max_ttl": "EZDNS_API_CACHE_MAX_TTL",
+            },
+        },
+        "stats": API_RESULT_CACHE.stats(),
     }
 
 
@@ -415,11 +723,14 @@ async def api_help():
                     "dns": "(GET only) Base64url encoded DNS query",
                     "upstream": "Upstream DNS server to forward queries to. UDP/DoT accept host:port.",
                     "proxy": "Proxy for DoH upstream requests",
+                    "cache": "Enable the ARC cache for this request. Disabled by default.",
+                    "cache_max_ttl": "Per-request upper bound for cache TTL in seconds",
                 },
                 "examples": [
                     "curl 'http://localhost:8000/dns-query?dns=AAABAAABAAAAAAAAB2V4YW1wbGUDY29tAAABAAE'",
                     "curl 'http://localhost:8000/dns-query?dns=...&upstream=udp://8.8.8.8'",
                     "curl 'http://localhost:8000/dns-query?dns=...&upstream=udp://8.8.8.8:8053'",
+                    "curl 'http://localhost:8000/dns-query?dns=...&cache=true&cache_max_ttl=60'",
                 ],
             },
             "/api/query": {
@@ -431,6 +742,8 @@ async def api_help():
                     "type": "Record type: A, AAAA, CNAME, MX, TXT, NS, SOA, BOTH, ALL",
                     "proxy": "Proxy for DoH requests",
                     "format": "Output format: json, text, simple",
+                    "cache": "Enable the ARC cache for this request. Disabled by default.",
+                    "cache_max_ttl": "Per-request upper bound for cache TTL in seconds",
                 },
                 "examples": [
                     "curl 'http://localhost:8000/api/query?domain=google.com'",
@@ -438,15 +751,41 @@ async def api_help():
                     "curl 'http://localhost:8000/api/query?domain=google.com&server=udp://8.8.8.8:8053'",
                     "curl 'http://localhost:8000/api/query?domain=google.com&format=simple'",
                     "curl 'http://localhost:8000/api/query?domain=google.com&type=AAAA&proxy=http://127.0.0.1:7890'",
+                    "curl 'http://localhost:8000/api/query?domain=google.com&cache=true'",
+                    "curl 'http://localhost:8000/api/query?domain=google.com&cache=true&cache_max_ttl=120'",
                 ],
             },
             "/api/servers": {
                 "description": "List the built-in server presets",
                 "methods": ["GET"],
             },
+            "/api/cache": {
+                "description": "Show ARC cache configuration and live stats",
+                "methods": ["GET"],
+            },
             "/api/test": {
                 "description": "Single-server test endpoint used by the web UI",
                 "methods": ["POST"],
+                "body_fields": {
+                    "cache": "Enable the ARC cache for this request. Disabled by default.",
+                    "cache_max_ttl": "Per-request upper bound for cache TTL in seconds",
+                },
+            },
+        },
+        "cache": {
+            "policy": "ARC",
+            "default_request_cache": False,
+            "default_capacity": API_CACHE_SIZE,
+            "default_max_ttl": API_CACHE_MAX_TTL,
+            "request_controls": ["cache", "cache_max_ttl"],
+            "response_headers": [
+                "X-Cache",
+                "X-Cache-TTL",
+                "X-Cache-Expires-In",
+            ],
+            "environment_variables": {
+                "size": "EZDNS_API_CACHE_SIZE",
+                "max_ttl": "EZDNS_API_CACHE_MAX_TTL",
             },
         },
         "server_format": {
