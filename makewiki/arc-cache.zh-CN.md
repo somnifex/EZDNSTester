@@ -1,6 +1,5 @@
 # ARC 缓存
 
-
 EZDNSTester 内置了一个进程内的自适应替换缓存，专为 DNS 结果调优。实现位于 `arc_cache.py` 的 `AdaptiveReplacementTTLCache`，`app.py` 通过模块级单例 `API_RESULT_CACHE` 使用。
 
 ## 设计
